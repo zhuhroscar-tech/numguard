@@ -20,6 +20,11 @@ class Fixture:
     # above is treated as "p", q_values as "q" in KL(p || q)). None for
     # every other kernel.
     q_values: Optional[Sequence[float]] = None
+    # Boolean keep-mask, used only by masked_softmax fixtures (True =
+    # position participates in the softmax, False = excluded, e.g. a
+    # padding token or a position outside a causal/cross-attention
+    # span). None for every other kernel.
+    mask: Optional[Sequence[bool]] = None
     # Which dtypes this fixture is meaningful for. Some adversarial cases
     # only demonstrate their failure mode at a particular precision (e.g.
     # an offset that overflows float16 outright isn't a fair "naive vs
@@ -364,6 +369,75 @@ ONLINE_SOFTMAX_FIXTURES = [
     ),
 ]
 
+MASKED_SOFTMAX_FIXTURES = [
+    Fixture(
+        "all_visible_control",
+        [1.0, 2.0, 3.0, 4.0],
+        "No masking at all (every position kept) -- an easy control "
+        "case where masked_softmax must reduce exactly to ordinary "
+        "softmax over all four positions; both naive and stable "
+        "formulas should agree closely.",
+        mask=[True, True, True, True],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "some_padding",
+        [2.0, 5.0, 1.0, 8.0, 0.5],
+        "Ordinary partial padding -- the realistic everyday case: two "
+        "trailing padding positions in a batch masked out, three real "
+        "tokens remain. No extreme magnitudes and at least one "
+        "unmasked position, so naive's masked_fill(-inf)-then-softmax "
+        "pattern works fine here; included as a control showing the "
+        "bug is conditional on the all-masked case specifically, not "
+        "masking itself.",
+        mask=[True, True, False, True, False],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "fully_padded_row",
+        [3.0, -1.0, 4.0, 2.0],
+        "Every position masked out -- the real shape of a fully-"
+        "padded row in a batch (a short sequence padded to the "
+        "batch's max length contributes trailing rows with zero real "
+        "tokens). Naive's masked_fill(-inf) followed by a literal "
+        "softmax computes exp(-inf)=0.0 for every position, so both "
+        "the numerator and the normalizing sum are 0.0 -- the naive "
+        "division 0.0/0.0 is NaN across the entire row, for every "
+        "element, even though no logit here is remotely extreme. "
+        "This is the headline demonstration: the bug is purely about "
+        "an empty support, not about float range or cancellation "
+        "(matches torchtune's documented skip_mask guard against "
+        "exactly this case).",
+        mask=[False, False, False, False],
+    ),
+    Fixture(
+        "fully_padded_with_extreme_logit",
+        [50000.0, 1.0, -1.0],
+        "Every position masked out AND one logit is extreme -- shows "
+        "the two failure modes (all-masked NaN, and overflow) are "
+        "independent: even if masking were somehow skipped, this "
+        "input would also overflow naive_softmax. Confirms the "
+        "all-masked guard in stable_masked_softmax fires before the "
+        "shift-by-max step ever looks at the (masked-away) extreme "
+        "value.",
+        mask=[False, False, False],
+    ),
+    Fixture(
+        "single_unmasked_extreme",
+        [50000.0, 1.0, -1.0, 2.0],
+        "Only one position survives masking, and it happens to be an "
+        "extreme logit -- naive's masked_fill(-inf) pattern still "
+        "works here (exp(-inf)=0 for the three masked terms, "
+        "exp(50000) overflows to inf, inf/inf is NaN) so this is "
+        "actually a second, independent way naive_masked_softmax can "
+        "fail: not every failure here is the all-masked case. Stable "
+        "shifts by the max of only the unmasked logits (50000.0 "
+        "itself), so exp(0)=1 and the result is exactly the one-hot "
+        "distribution [1.0, 0.0, 0.0, 0.0].",
+        mask=[True, False, False, False],
+    ),
+]
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -373,6 +447,7 @@ FIXTURES_BY_KERNEL = {
     "rms_norm": RMS_NORM_FIXTURES,
     "kl_divergence": KL_DIVERGENCE_FIXTURES,
     "online_softmax": ONLINE_SOFTMAX_FIXTURES,
+    "masked_softmax": MASKED_SOFTMAX_FIXTURES,
 }
 
 

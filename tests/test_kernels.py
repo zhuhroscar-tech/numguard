@@ -330,3 +330,74 @@ class TestOnlineSoftmaxMissedRescale:
         true_last = math.exp(6.0) / sum(math.exp(v) for v in values)
         assert float(stable[-1]) == pytest.approx(true_last, rel=1e-6)
         assert float(naive[-1]) != pytest.approx(true_last, rel=1e-2)
+
+
+class TestMaskedSoftmaxAllMaskedNaN:
+    """Attention padding/causal masking: the headline demonstration is
+    that a fully-masked row (every position excluded -- the real shape
+    of a fully-padded batch row) NaNs out the naive masked_fill(-inf)
+    pattern entirely, even though no individual logit is extreme."""
+
+    def test_naive_all_masked_row_is_nan(self):
+        values = [3.0, -1.0, 4.0, 2.0]
+        mask = [False, False, False, False]
+        naive = kernels.naive_masked_softmax(values, mask, "float32")
+        stable = kernels.stable_masked_softmax(values, mask, "float32")
+        assert all(math.isnan(v) for v in naive), (
+            "naive_masked_softmax should NaN out entirely when every "
+            "position is masked (0.0/0.0 from an empty support)"
+        )
+        assert all(v == pytest.approx(0.0) for v in stable), (
+            "stable_masked_softmax should return an all-zero row for "
+            "an empty support instead of NaN"
+        )
+
+    def test_naive_all_masked_with_extreme_logit_still_nan(self):
+        values = [50000.0, 1.0, -1.0]
+        mask = [False, False, False]
+        naive = kernels.naive_masked_softmax(values, mask, "float32")
+        stable = kernels.stable_masked_softmax(values, mask, "float32")
+        assert all(math.isnan(v) for v in naive)
+        assert all(v == pytest.approx(0.0) for v in stable)
+
+    def test_naive_single_unmasked_extreme_logit_overflows_to_nan(self):
+        # A second, independent way naive_masked_softmax can fail: not
+        # every failure mode here is the all-masked case -- an extreme
+        # *unmasked* logit still overflows the naive exp() the same way
+        # plain naive_softmax does.
+        values = [50000.0, 1.0, -1.0, 2.0]
+        mask = [True, False, False, False]
+        naive = kernels.naive_masked_softmax(values, mask, "float32")
+        stable = kernels.stable_masked_softmax(values, mask, "float32")
+        assert any(math.isnan(v) or math.isinf(v) for v in naive)
+        assert all(math.isfinite(v) for v in stable)
+        assert float(stable[0]) == pytest.approx(1.0, abs=1e-5)
+        assert float(stable[1]) == pytest.approx(0.0, abs=1e-9)
+
+    def test_stable_masked_positions_always_exactly_zero(self):
+        values = [2.0, 5.0, 1.0, 8.0, 0.5]
+        mask = [True, True, False, True, False]
+        stable = kernels.stable_masked_softmax(values, mask, "float32")
+        assert float(stable[2]) == 0.0
+        assert float(stable[4]) == 0.0
+        assert float(sum(stable)) == pytest.approx(1.0, abs=1e-5)
+
+    def test_naive_and_stable_agree_on_ordinary_partial_masking(self):
+        # Control case: with at least one unmasked position and no
+        # extreme magnitudes, naive and stable should agree closely --
+        # the bug is specifically conditional on the all-masked (or
+        # extreme-unmasked-logit) case, not on masking itself.
+        values = [2.0, 5.0, 1.0, 8.0, 0.5]
+        mask = [True, True, False, True, False]
+        naive = kernels.naive_masked_softmax(values, mask, "float64")
+        stable = kernels.stable_masked_softmax(values, mask, "float64")
+        for n, s in zip(naive, stable):
+            assert float(n) == pytest.approx(float(s), rel=1e-9)
+
+    def test_all_visible_reduces_to_ordinary_softmax(self):
+        values = [1.0, 2.0, 3.0, 4.0]
+        mask = [True, True, True, True]
+        masked = kernels.stable_masked_softmax(values, mask, "float64")
+        plain = kernels.stable_softmax(values, "float64")
+        for m, p in zip(masked, plain):
+            assert float(m) == pytest.approx(float(p), rel=1e-9)

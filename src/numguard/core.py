@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -122,6 +122,20 @@ def _gold_online_softmax(fixture: Fixture) -> list:
     return reference.gold_online_softmax(fixture.values)
 
 
+def _gold_masked_softmax(fixture: Fixture) -> list:
+    return reference.gold_masked_softmax(fixture.values, fixture.mask)
+
+
+# Kernels whose naive/stable implementations take extra positional
+# arguments beyond (values, dtype) -- masked_softmax additionally takes
+# the boolean keep-mask. Every other array-valued kernel takes exactly
+# (values, dtype), so this stays a short exception list rather than
+# forcing every kernel through a uniform-but-awkward *args signature.
+EXTRA_ARGS = {
+    "masked_softmax": lambda fixture: (fixture.mask,),
+}
+
+
 # Kernels whose naive/stable implementations return a full array (one
 # CaseResult scored across every element) rather than a single scalar.
 # Adding a new array-valued kernel needs exactly one entry here (mapping
@@ -134,13 +148,15 @@ ARRAY_VALUED_GOLD = {
     "layer_norm": _gold_layer_norm,
     "rms_norm": _gold_rms_norm,
     "online_softmax": _gold_online_softmax,
+    "masked_softmax": _gold_masked_softmax,
 }
 
 
 def _run_array_valued(kernel: str, variant: str, fixture: Fixture, dtype: str) -> CaseResult:
     naive_fn, stable_fn = kernels.KERNELS[kernel]
     fn = naive_fn if variant == "naive" else stable_fn
-    computed = fn(fixture.values, dtype)
+    extra = EXTRA_ARGS[kernel](fixture) if kernel in EXTRA_ARGS else ()
+    computed = fn(fixture.values, *extra, dtype)
     gold = ARRAY_VALUED_GOLD[kernel](fixture)
 
     is_finite = bool(all(math.isfinite(float(c)) for c in computed))

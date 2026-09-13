@@ -307,6 +307,61 @@ def stable_online_softmax(values, dtype, chunk_size: int = 2):
         return (exps / l).astype(dtype)
 
 
+# --- masked softmax (attention padding/causal masking) --------------------
+
+# The single most common real-world attention pattern: some positions
+# (padding tokens, future positions under a causal mask, cross-attention
+# keys outside a valid span) must receive exactly zero probability mass.
+# This is algorithmically distinct from every other kernel in this
+# module -- it is not about a single reduction's float range or
+# cancellation, but about what happens when *every* position for a given
+# query is excluded. That is not a contrived edge case: it happens for
+# real on fully-padded rows in a batch (a sequence padded to the batch's
+# max length has trailing rows with no valid key at all) and is a
+# documented, recurring bug class (e.g. torchtune's transformer.py
+# explicitly guards it with a `skip_mask`; a HF-Transformers-adjacent
+# forum diagnosis titled "NaN in NSA _compress_branch -> fully-masked
+# rows softmax to NaN" independently describes the identical failure).
+def naive_masked_softmax(values, mask, dtype):
+    """Fill masked positions with -inf and take a literal softmax --
+    the textbook `masked_fill(mask, -inf)` pattern used throughout
+    attention implementations. Each individual masked position is fine
+    (`exp(-inf) == 0.0`), but if *every* position for this row is masked,
+    every term underflows to `0.0`, the normalizer sum is `0.0`, and the
+    division `0.0 / 0.0` is `NaN` for the entire row -- not because any
+    input was extreme, but purely because there was nothing valid left
+    to normalize over."""
+    x = _arr(values, dtype)
+    keep = np.asarray(mask, dtype=bool)
+    neg_inf = DTYPES[dtype](-np.inf)
+    masked_logits = np.where(keep, x, neg_inf)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        e = np.exp(masked_logits)
+        total = np.sum(e)
+        return (e / total).astype(dtype)
+
+
+def stable_masked_softmax(values, mask, dtype):
+    """Guard the all-masked case explicitly (return an all-zero row --
+    the same convention real fixes use: there is no valid probability
+    distribution over an empty support, so the defined answer is 'no
+    mass anywhere', not NaN) and otherwise shift by the max of only the
+    *unmasked* logits before exponentiating, so a masked position's
+    `-inf` can never corrupt the shift even when combined with an
+    otherwise-extreme unmasked logit."""
+    x = _arr(values, dtype)
+    keep = np.asarray(mask, dtype=bool)
+    if not keep.any():
+        return np.zeros_like(x, dtype=DTYPES[dtype])
+    neg_inf = DTYPES[dtype](-np.inf)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        m = np.max(x[keep])
+        masked_logits = np.where(keep, x, neg_inf)
+        e = np.exp((masked_logits - m).astype(DTYPES[dtype]))
+        total = np.sum(e)
+        return (e / total).astype(dtype)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -316,4 +371,5 @@ KERNELS = {
     "rms_norm": (naive_rms_norm, stable_rms_norm),
     "kl_divergence": (naive_kl_divergence, stable_kl_divergence),
     "online_softmax": (naive_online_softmax, stable_online_softmax),
+    "masked_softmax": (naive_masked_softmax, stable_masked_softmax),
 }

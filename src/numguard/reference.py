@@ -161,5 +161,37 @@ def gold_online_softmax(values: Sequence[float]) -> list:
     of what the function means. So the ground truth for online_softmax
     is identical to gold_softmax: this is deliberate, and is exactly
     what lets naive_online_softmax's chunking bug be measured as a real
-    error rather than an intentional difference in output."""
+    error rather than an intentional difference in output.
+    """
     return gold_softmax(values)
+
+
+def gold_masked_softmax(values: Sequence[float], mask: Sequence[bool]) -> list:
+    """softmax restricted to the unmasked positions, at 50-digit
+    precision, from the textbook definition: masked positions get
+    exactly 0 probability, and the remaining positions get their
+    ordinary softmax renormalized over just that subset. When every
+    position is masked there is no valid probability distribution over
+    an empty support -- by the same convention the stable kernel
+    implements, this reference returns all zeros rather than raising,
+    so the masked_softmax kernels can be scored like every other
+    array-valued kernel instead of needing a special case in core.py.
+    """
+    ctx = _ctx()
+    xs = _to_decimals(values)
+    keep = list(mask)
+    if not any(keep):
+        return [ctx.create_decimal(0) for _ in xs]
+    kept_xs = [x for x, k in zip(xs, keep) if k]
+    kept_exps = [ctx.exp(x) for x in kept_xs]
+    total = ctx.create_decimal(0)
+    for e in kept_exps:
+        total = ctx.add(total, e)
+    result = []
+    it = iter(kept_exps)
+    for k in keep:
+        if k:
+            result.append(ctx.divide(next(it), total))
+        else:
+            result.append(ctx.create_decimal(0))
+    return result

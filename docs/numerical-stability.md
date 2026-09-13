@@ -206,9 +206,59 @@ involved anywhere, and naive is still measurably wrong -- this
 demonstrates that "no extreme values" is not sufficient evidence that a
 chunked/streaming reduction is correct.
 
+## Masked softmax
+
+**Textbook definition:** given a boolean keep-mask over positions,
+`masked_softmax(x)_i = exp(x_i) / sum_j(exp(x_j))` restricted to the
+positions where the mask is `True`, and exactly `0` at every masked
+position. This is the standard attention-padding/causal-masking pattern:
+real implementations set masked logits to `-inf` before a softmax so
+`exp(-inf) == 0.0` drops them out of both the numerator (for masked
+positions) and the normalizing sum.
+
+**Naive formula** (`naive_masked_softmax`): apply the `-inf` fill and
+take a literal softmax, with no other guard. This is correct for every
+individual masked position on its own -- `exp(-inf) == 0.0` is exactly
+right. The bug is a *global* property of the row, not a per-element
+one: if *every* position in a row is masked (a fully-padded row -- a
+completely ordinary occurrence any time a batch contains sequences
+shorter than the batch's max length), every term underflows to `0.0`,
+the normalizing sum is `0.0`, and the division `0.0 / 0.0` is `NaN` for
+every element in the row, even though no logit involved was remotely
+extreme. This is algorithmically distinct from every overflow/
+cancellation bug elsewhere in this module: the failure is about an
+*empty support*, not about float range. It is also a real, previously
+documented bug class, not a contrived scenario invented for this
+tool -- torchtune's `modules/transformer.py` carries an explicit
+`skip_mask` guard specifically to work around "a full row of the
+attention matrix being masked out ... causes a NaN", and independent
+production-debugging notes (e.g. an "NSA `_compress_branch`" incident
+writeup) describe the identical "fully-masked rows softmax to NaN"
+failure and the same guard as the fix.
+
+A second, independent way this naive formula can fail: if the *only*
+surviving (unmasked) logit is itself extreme (e.g. `50000.0`), the
+literal `exp()` overflows to `inf` regardless of masking, and `inf/inf`
+is `NaN` -- the ordinary softmax-overflow bug from earlier in this
+document, simply co-occurring with masking rather than caused by it
+(see `single_unmasked_extreme` in `fixtures.py`).
+
+**Stable formula** (`stable_masked_softmax`): guard the all-masked case
+explicitly -- when no position survives, there is no valid probability
+distribution over an empty support, so the defined answer is "no mass
+anywhere" (an all-zero row), matching the convention real fixes (like
+torchtune's `skip_mask`) use, rather than propagating `NaN`. Otherwise,
+shift by the max of only the *unmasked* logits before exponentiating
+(the ordinary log-sum-exp trick, but computed over the surviving subset
+so a masked position's `-inf` can never influence the shift), then
+apply the `-inf` fill and normalize as usual. This is mathematically
+identical to the naive formula everywhere at least one position is
+unmasked and no unmasked logit is extreme; it only changes behavior at
+the two edge cases above.
+
 ## Independent ground truth
 
-All eight derivations above are cross-checked in this repository against
+All nine derivations above are cross-checked in this repository against
 an independent implementation (`reference.py`) that uses Python's
 arbitrary-precision `decimal.Decimal` (50 significant digits) evaluated
 directly from the mathematical definitions -- not derived from the same
@@ -236,3 +286,7 @@ tests, not decorative claims.
   (arXiv:2205.14135) -- derives the incremental rescale-by-exp(m_old -
   m_new) correction that `stable_online_softmax` implements, and that
   `naive_online_softmax` demonstrates the effect of omitting.
+- `torchtune/modules/transformer.py` (PyTorch's `torchtune` library) --
+  carries an explicit `skip_mask` guard against a fully-masked attention
+  row producing `NaN`, the exact real-world instance of the failure mode
+  `masked_softmax`'s `fully_padded_row` fixture demonstrates.

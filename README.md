@@ -67,6 +67,18 @@ and tells you exactly where and how the naive formula breaks.
   rounding difference, and not caused by any extreme magnitude
   (verified in this repo: `online_softmax`'s `max_in_middle_chunk`
   fixture uses only single-digit inputs).
+- **Masked softmax has yet another distinct failure shape**: attention
+  padding/causal masking sets excluded positions' logits to `-inf`
+  before a softmax -- correct for each masked position on its own
+  (`exp(-inf) == 0.0`), but if *every* position in a row is masked (a
+  fully-padded row -- an entirely ordinary occurrence any time a batch
+  contains sequences shorter than the batch's max length), the
+  normalizing sum is also `0.0`, and `0.0 / 0.0` is `NaN` across the
+  *entire row*, even though no individual logit was extreme. This is a
+  real, previously documented bug class -- PyTorch's `torchtune`
+  library carries an explicit `skip_mask` guard against exactly this
+  failure (verified in this repo: `masked_softmax`'s
+  `fully_padded_row` fixture).
 
 These are not edge cases invented for this tool -- they are exactly the
 failure modes documented in the numerical-stability literature (Blanchard
@@ -78,8 +90,9 @@ a blog post or a framework-internal function you have to trust blindly.
 
 ## What this does
 
-For each of eight kernels (`logsumexp`, `softmax`, `cross_entropy`,
-`variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`), across three
+For each of nine kernels (`logsumexp`, `softmax`, `cross_entropy`,
+`variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
+`masked_softmax`), across three
 dtypes (`float16`, `float32`, `float64`), on a curated set of
 adversarial and everyday fixtures, numguard:
 
