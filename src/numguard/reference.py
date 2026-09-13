@@ -152,3 +152,14 @@ def gold_kl_divergence(p_values: Sequence[float], q_values: Sequence[float]) -> 
         term = ctx.multiply(p, ctx.ln(ctx.divide(p, q)))
         total = ctx.add(total, term)
     return total
+
+
+def gold_online_softmax(values: Sequence[float]) -> list:
+    """The mathematical definition of softmax does not depend on how an
+    implementation chunks its input -- chunking is purely an
+    implementation strategy (e.g. FlashAttention-style tiling), not part
+    of what the function means. So the ground truth for online_softmax
+    is identical to gold_softmax: this is deliberate, and is exactly
+    what lets naive_online_softmax's chunking bug be measured as a real
+    error rather than an intentional difference in output."""
+    return gold_softmax(values)

@@ -169,9 +169,46 @@ the two edge cases above, where the naive formula's literal
 transcription hits an IEEE754 indeterminate form instead of applying
 the intended mathematical convention/limit.
 
+## Online (chunked/streaming) softmax
+
+**Textbook definition:** same softmax as above, but computed
+incrementally over fixed-size chunks of the input instead of all at
+once -- the pattern used by FlashAttention-style kernels that tile a
+long sequence through limited on-chip memory (Dao et al., "FlashAttention:
+Fast and Memory-Efficient Exact Attention with IO-Awareness," arXiv:2205.14135).
+This is a genuinely distinct algorithmic axis from every other kernel in
+this repo: it is not about a single reduction's float range or
+cancellation, but about whether *previously accumulated partial
+results* get correctly corrected when a later chunk reveals a new
+running maximum.
+
+**Naive formula** (`naive_online_softmax`): track a running max `m` and
+running sum of exponentials `l` as chunks arrive, but forget to rescale
+the exponentials (and running sum) already accumulated from earlier
+chunks whenever a later chunk raises `m`. This produces a finite,
+non-NaN output that is nonetheless a *different, systematically wrong*
+probability distribution whenever the true global max is not already in
+the first chunk -- the earlier elements keep the relative weight they
+were assigned under the old (too-low) max, permanently overweighting
+them relative to the true softmax.
+
+**Stable formula** (`stable_online_softmax`): the standard FlashAttention
+incremental correction -- whenever the running max increases from `m_old`
+to `m_new`, multiply every already-accumulated exponential and the
+running sum by `exp(m_old - m_new)` before folding in the new chunk.
+This keeps the running quantities algebraically equivalent to computing
+the shifted-softmax numerator/denominator over the whole array seen so
+far, at every step, regardless of which chunk contains the true maximum.
+
+The bug is orthogonal to dtype range or magnitude: `max_in_middle_chunk`
+below uses only single-digit inputs, no overflow or cancellation is
+involved anywhere, and naive is still measurably wrong -- this
+demonstrates that "no extreme values" is not sufficient evidence that a
+chunked/streaming reduction is correct.
+
 ## Independent ground truth
 
-All seven derivations above are cross-checked in this repository against
+All eight derivations above are cross-checked in this repository against
 an independent implementation (`reference.py`) that uses Python's
 arbitrary-precision `decimal.Decimal` (50 significant digits) evaluated
 directly from the mathematical definitions -- not derived from the same
@@ -194,3 +231,8 @@ tests, not decorative claims.
 - HuggingFace Transformers' `LlamaRMSNorm` / `T5LayerNorm` source, which
   upcasts the RMSNorm reduction to float32 before squaring -- the exact
   real-world mitigation this repo's `stable_rms_norm` demonstrates.
+- Dao, T., Fu, D., Ermon, S., Rudra, A., Ré, C. (2022), "FlashAttention:
+  Fast and Memory-Efficient Exact Attention with IO-Awareness"
+  (arXiv:2205.14135) -- derives the incremental rescale-by-exp(m_old -
+  m_new) correction that `stable_online_softmax` implements, and that
+  `naive_online_softmax` demonstrates the effect of omitting.

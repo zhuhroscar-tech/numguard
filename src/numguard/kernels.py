@@ -241,6 +241,72 @@ def stable_kl_divergence(p_values, q_values, dtype: str) -> float:
         return float(np.sum(terms.astype(dtype)))
 
 
+# --- online (chunked/streaming) softmax -----------------------------------
+
+# The FlashAttention-style incremental-softmax pattern: process the input
+# in fixed-size chunks, maintaining a running max `m` and running
+# normalizer `l` instead of materializing the whole array at once. This
+# is algorithmically distinct from the other kernels in this module --
+# it is not about float range/cancellation at a single reduction, but
+# about whether *previously accumulated* partial results get correctly
+# rescaled when a later chunk raises the running max. FlashAttention
+# (Dao et al., arXiv:2205.14135) derives this rescale-by-exp(m_old -
+# m_new) step explicitly; forgetting it is a real, documented class of
+# bug distinct from every other kernel in this repo, because the naive
+# version here is not "less precise" -- it computes a different,
+# systematically wrong quantity whenever the running max increases
+# after the first chunk, independent of any overflow/underflow.
+def naive_online_softmax(values, dtype, chunk_size: int = 2):
+    """Chunked softmax that updates the running max but forgets to
+    rescale the exponentials (and running sum) already accumulated from
+    earlier chunks. Matches the true softmax only when the global max
+    happens to already be in the first chunk (no rescale is ever
+    needed); otherwise every earlier element's relative weight is
+    wrong, not merely imprecise."""
+    x = _arr(values, dtype)
+    n = len(x)
+    m = -np.inf
+    l = np.zeros((), dtype=DTYPES[dtype])
+    exps = np.zeros_like(x)
+    with np.errstate(over="ignore", invalid="ignore"):
+        for i in range(0, n, chunk_size):
+            chunk = x[i : i + chunk_size]
+            new_m = max(m, float(np.max(chunk)))
+            chunk_exp = np.exp((chunk - new_m).astype(DTYPES[dtype]))
+            exps[i : i + chunk_size] = chunk_exp
+            l = l + np.sum(chunk_exp)
+            m = new_m
+        return (exps / l).astype(dtype)
+
+
+def stable_online_softmax(values, dtype, chunk_size: int = 2):
+    """Chunked softmax with the correct incremental rescale: whenever a
+    new chunk raises the running max from m_old to m_new, every
+    previously accumulated exponential (and the running sum) is
+    multiplied by exp(m_old - m_new) before the new chunk is folded in
+    -- the standard FlashAttention-style online-softmax correction, so
+    the result is exact regardless of which chunk contains the true
+    max."""
+    x = _arr(values, dtype)
+    n = len(x)
+    m = -np.inf
+    l = np.zeros((), dtype=DTYPES[dtype])
+    exps = np.zeros_like(x)
+    with np.errstate(over="ignore", invalid="ignore"):
+        for i in range(0, n, chunk_size):
+            chunk = x[i : i + chunk_size]
+            new_m = max(m, float(np.max(chunk)))
+            if np.isfinite(m):
+                scale = np.exp(DTYPES[dtype](m - new_m))
+                l = l * scale
+                exps[:i] = exps[:i] * scale
+            chunk_exp = np.exp((chunk - new_m).astype(DTYPES[dtype]))
+            exps[i : i + chunk_size] = chunk_exp
+            l = l + np.sum(chunk_exp)
+            m = new_m
+        return (exps / l).astype(dtype)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -249,4 +315,5 @@ KERNELS = {
     "layer_norm": (naive_layer_norm, stable_layer_norm),
     "rms_norm": (naive_rms_norm, stable_rms_norm),
     "kl_divergence": (naive_kl_divergence, stable_kl_divergence),
+    "online_softmax": (naive_online_softmax, stable_online_softmax),
 }

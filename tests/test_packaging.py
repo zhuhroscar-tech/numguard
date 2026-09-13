@@ -96,6 +96,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "layer_norm": "LayerNorm",
         "rms_norm": "RMSNorm",
         "kl_divergence": "KL divergence",
+        "online_softmax": "Online (chunked/streaming) softmax",
     }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

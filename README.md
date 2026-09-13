@@ -57,6 +57,16 @@ and tells you exactly where and how the naive formula breaks.
   `NaN` for the whole sum; the correct answer, by the standard
   `x*log(x) -> 0` convention, is that the term simply contributes `0`
   (verified in this repo: `kl_divergence`'s `one_hot_label` fixture).
+- **Online (chunked/streaming) softmax has a distinct, non-overflow
+  failure mode**: FlashAttention-style kernels process a long sequence
+  in tiles, tracking a running max and running sum instead of holding
+  the whole array in memory at once. A naive incremental implementation
+  that forgets to rescale its already-accumulated partial results when
+  a later tile raises the running max produces a *finite, non-NaN, but
+  systematically wrong* probability distribution -- not a subtle
+  rounding difference, and not caused by any extreme magnitude
+  (verified in this repo: `online_softmax`'s `max_in_middle_chunk`
+  fixture uses only single-digit inputs).
 
 These are not edge cases invented for this tool -- they are exactly the
 failure modes documented in the numerical-stability literature (Blanchard
@@ -68,8 +78,8 @@ a blog post or a framework-internal function you have to trust blindly.
 
 ## What this does
 
-For each of seven kernels (`logsumexp`, `softmax`, `cross_entropy`,
-`variance`, `layer_norm`, `rms_norm`, `kl_divergence`), across three
+For each of eight kernels (`logsumexp`, `softmax`, `cross_entropy`,
+`variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`), across three
 dtypes (`float16`, `float32`, `float64`), on a curated set of
 adversarial and everyday fixtures, numguard:
 

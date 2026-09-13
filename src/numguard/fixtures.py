@@ -319,6 +319,51 @@ KL_DIVERGENCE_FIXTURES = [
     ),
 ]
 
+ONLINE_SOFTMAX_FIXTURES = [
+    Fixture(
+        "max_in_first_chunk",
+        [10.0, 1.0, 2.0, 1.0, 0.0, 1.0],
+        "The global max is already in the first chunk, so the running "
+        "max never increases after chunk 0 and no rescale is ever "
+        "needed -- naive (no rescale) and stable (always rescales, but "
+        "the correction factor is exp(0)=1 here) should agree closely. "
+        "Included as a control showing the bug is conditional, not "
+        "always visible.",
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "max_in_middle_chunk",
+        [1.0, 5.0, 3.0, 8.0, 2.0, 12.0],
+        "The running max increases three times across three chunks "
+        "(chunk_size=2): naive forgets to rescale the exponentials "
+        "already accumulated from earlier chunks each time this "
+        "happens, so its output is a systematically wrong (but "
+        "finite, non-NaN) probability distribution -- not a subtle "
+        "rounding difference. This is the headline demonstration: no "
+        "extreme magnitude or cancellation is involved, just a missed "
+        "incremental-rescale step, the FlashAttention-style online-"
+        "softmax correction (arXiv:2205.14135).",
+    ),
+    Fixture(
+        "max_in_last_chunk_extreme",
+        [1.0, 2.0, 3.0, 1.0, 2.0, 50000.0],
+        "The true global max arrives only in the final chunk and is "
+        "far larger than every earlier value -- naive's un-rescaled "
+        "running sum from the first five elements remains wildly "
+        "over-weighted relative to the true answer (which puts "
+        "essentially all mass on the last element), while the stable "
+        "incremental rescale still recovers the correct one-hot-like "
+        "distribution.",
+    ),
+    Fixture(
+        "monotonically_increasing",
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        "Every chunk raises the running max, the worst case for the "
+        "number of missed rescales -- naive accumulates compounding "
+        "error from every one of the three rescale steps it skips.",
+    ),
+]
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -327,6 +372,7 @@ FIXTURES_BY_KERNEL = {
     "layer_norm": LAYER_NORM_FIXTURES,
     "rms_norm": RMS_NORM_FIXTURES,
     "kl_divergence": KL_DIVERGENCE_FIXTURES,
+    "online_softmax": ONLINE_SOFTMAX_FIXTURES,
 }
 
 

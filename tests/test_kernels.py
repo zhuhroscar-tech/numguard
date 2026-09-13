@@ -256,3 +256,77 @@ class TestKLDivergenceZeroProbabilityNaN:
         q = [0.5, 0.0]
         stable = kernels.stable_kl_divergence(p, q, "float64")
         assert math.isinf(stable) and stable > 0
+
+
+class TestOnlineSoftmaxMissedRescale:
+    """Chunked/streaming (FlashAttention-style) softmax: the headline
+    demonstration that a missed incremental rescale of already-
+    accumulated partial results is a distinct bug class from every
+    other kernel here -- it is wrong regardless of dtype range or
+    magnitude, purely because earlier chunks' contributions are never
+    corrected once the running max increases."""
+
+    def test_naive_agrees_with_stable_when_max_in_first_chunk(self):
+        # Control case: the running max never increases past chunk 0,
+        # so there is nothing for the missing rescale step to get
+        # wrong -- naive and stable must agree closely here.
+        values = [10.0, 1.0, 2.0, 1.0, 0.0, 1.0]
+        naive = kernels.naive_online_softmax(values, "float32")
+        stable = kernels.stable_online_softmax(values, "float32")
+        for n, s in zip(naive, stable):
+            assert float(n) == pytest.approx(float(s), rel=1e-4)
+
+    def test_naive_wrong_when_max_in_middle_chunk_no_overflow_involved(self):
+        # No extreme magnitude anywhere in this input -- single-digit
+        # values only. Naive is still measurably wrong because it never
+        # rescales the first chunk's exponentials after later chunks
+        # raise the running max.
+        values = [1.0, 5.0, 3.0, 8.0, 2.0, 12.0]
+        naive = kernels.naive_online_softmax(values, "float32")
+        stable = kernels.stable_online_softmax(values, "float32")
+        # true softmax puts ~98% of the mass on the last element
+        # (value 12.0, the global max); naive badly under-weights it
+        # because it never rescaled away the earlier chunks' inflated
+        # contributions.
+        assert float(stable[-1]) == pytest.approx(0.9809567, rel=1e-3)
+        assert float(naive[-1]) < 0.5, (
+            "naive_online_softmax should badly under-weight the true "
+            "max when it arrives in a later chunk"
+        )
+        assert abs(float(naive[-1]) - float(stable[-1])) > 0.4
+
+    def test_naive_still_wrong_when_true_max_arrives_in_last_chunk(self):
+        # The true global max is far larger than everything before it
+        # and only appears in the final chunk -- stable must still
+        # recover an (approximately) one-hot distribution; naive must
+        # not.
+        values = [1.0, 2.0, 3.0, 1.0, 2.0, 50000.0]
+        naive = kernels.naive_online_softmax(values, "float32")
+        stable = kernels.stable_online_softmax(values, "float32")
+        assert float(stable[-1]) == pytest.approx(1.0, abs=1e-5)
+        assert float(naive[-1]) < 0.9, (
+            "naive_online_softmax should not recover the correct "
+            "near-one-hot distribution when the max arrives late"
+        )
+
+    def test_stable_matches_reference_softmax_regardless_of_chunk_size(self):
+        # stable_online_softmax must be algorithmically equivalent to
+        # the whole-array stable softmax, independent of chunk_size.
+        values = [1.0, 5.0, 3.0, 8.0, 2.0, 12.0, 4.0, 7.0]
+        whole = kernels.stable_softmax(values, "float32")
+        for chunk_size in (1, 2, 3, 4, 8):
+            chunked = kernels.stable_online_softmax(values, "float32", chunk_size=chunk_size)
+            for w, c in zip(whole, chunked):
+                assert float(w) == pytest.approx(float(c), rel=1e-4), (
+                    f"stable_online_softmax diverged from stable_softmax at chunk_size={chunk_size}"
+                )
+
+    def test_everyday_monotonic_case_naive_diverges_from_true_softmax(self):
+        # Every chunk raises the running max -- the worst case for the
+        # number of skipped rescales.
+        values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        naive = kernels.naive_online_softmax(values, "float64", chunk_size=2)
+        stable = kernels.stable_online_softmax(values, "float64", chunk_size=2)
+        true_last = math.exp(6.0) / sum(math.exp(v) for v in values)
+        assert float(stable[-1]) == pytest.approx(true_last, rel=1e-6)
+        assert float(naive[-1]) != pytest.approx(true_last, rel=1e-2)

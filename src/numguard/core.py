@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -118,6 +118,10 @@ def _gold_rms_norm(fixture: Fixture) -> list:
     return reference.gold_rms_norm(fixture.values, eps)
 
 
+def _gold_online_softmax(fixture: Fixture) -> list:
+    return reference.gold_online_softmax(fixture.values)
+
+
 # Kernels whose naive/stable implementations return a full array (one
 # CaseResult scored across every element) rather than a single scalar.
 # Adding a new array-valued kernel needs exactly one entry here (mapping
@@ -129,6 +133,7 @@ ARRAY_VALUED_GOLD = {
     "softmax": _gold_softmax,
     "layer_norm": _gold_layer_norm,
     "rms_norm": _gold_rms_norm,
+    "online_softmax": _gold_online_softmax,
 }
 
 
