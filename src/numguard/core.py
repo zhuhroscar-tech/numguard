@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -82,6 +82,9 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
     elif kernel == "variance":
         computed = fn(fixture.values, dtype)
         gold = reference.gold_variance(fixture.values)
+    elif kernel == "kl_divergence":
+        computed = fn(fixture.values, fixture.q_values, dtype)
+        gold = reference.gold_kl_divergence(fixture.values, fixture.q_values)
     else:
         raise ValueError(f"not a scalar kernel: {kernel}")
 

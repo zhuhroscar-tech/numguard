@@ -128,3 +128,27 @@ def gold_rms_norm(values: Sequence[float], eps: Decimal) -> list:
     ms = ctx.divide(total_sq, ctx.create_decimal(len(xs)))
     denom = (ms + eps).sqrt(ctx)
     return [ctx.divide(x, denom) for x in xs]
+
+
+def gold_kl_divergence(p_values: Sequence[float], q_values: Sequence[float]) -> Decimal:
+    """sum(p_i * log(p_i / q_i)) at 50-digit precision, from the
+    measure-theoretic definition with the standard 0*log(0/q) := 0
+    convention applied explicitly (Decimal has no floating-point
+    0*-inf indeterminate-form trap to fall into, but the *mathematical*
+    convention still needs to be applied by this reference too, since
+    Decimal(0) * Decimal(0).ln() would itself raise -- there is no
+    "compute it and see what falls out" shortcut here; the convention
+    is inherent to the definition of KL divergence, not an artifact of
+    either implementation under test)."""
+    ctx = _ctx()
+    ps = _to_decimals(p_values)
+    qs = _to_decimals(q_values)
+    total = ctx.create_decimal(0)
+    for p, q in zip(ps, qs):
+        if p == 0:
+            continue  # contributes exactly 0 by convention
+        if q <= 0:
+            return Decimal("Infinity")
+        term = ctx.multiply(p, ctx.ln(ctx.divide(p, q)))
+        total = ctx.add(total, term)
+    return total
