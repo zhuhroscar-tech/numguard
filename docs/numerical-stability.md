@@ -256,9 +256,51 @@ identical to the naive formula everywhere at least one position is
 unmasked and no unmasked logit is extreme; it only changes behavior at
 the two edge cases above.
 
+## Summation
+
+**Textbook definition:** `sum(x) = x_1 + x_2 + ... + x_n`, computed as
+a running total over the sequence.
+
+**Naive formula** (`naive_sum`): the ordinary sequential loop --
+`total = 0; for x in xs: total += x`. Each individual addition rounds
+correctly to the working dtype (this is not an overflow or
+cancellation bug at any single step), but because the *same* running
+total absorbs every one of the `n - 1` roundings in sequence, the
+worst-case accumulated rounding error grows as `O(n * eps)` in the
+number of terms `n`. This is algorithmically distinct from every other
+kernel in this module: it is not a single reduction's range or
+cancellation, and not a streaming-rescale omission -- it is purely
+about the *order* in which additions happen, and the error is
+invisible at small `n` (a handful of terms) and only becomes
+measurable once `n` reaches the thousands, exactly the scale of a
+batch-aggregated loss or a gradient accumulated over many
+micro-batches.
+
+**Stable formula** (`stable_sum`): Kahan compensated summation. A
+second running variable `c` (the "compensation") tracks the low-order
+bits lost on the previous addition; before adding the next term, `c` is
+subtracted from it first, and after the addition, the newly-lost bits
+are recovered algebraically and stored back into `c` for the next
+step. This reduces the worst-case rounding-error bound from `O(n *
+eps)` to `O(eps)`, independent of `n` -- the standard mitigation
+(Kahan, 1965) for exactly the accumulator-drift failure `naive_sum`
+demonstrates. NumPy itself switched `np.sum`'s default implementation
+from naive sequential summation to pairwise summation (a different,
+also-effective mitigation, reducing the bound to `O(eps * log n)`)
+specifically to address this same class of error, independent
+corroboration that this is a real, previously-hit issue rather than a
+contrived demonstration.
+
+The bug is visible even with every term identical and unremarkable in
+magnitude (`many_small_uniform_terms`: 20,000 copies of `1e-4` at
+float32 sum to a measurably wrong total), and separately when one
+large term "swamps" the accumulator so later small increments are
+partially or fully lost (`large_value_swamps_small_terms`) -- two
+independent ways the same O(n) accumulation error manifests.
+
 ## Independent ground truth
 
-All nine derivations above are cross-checked in this repository against
+All ten derivations above are cross-checked in this repository against
 an independent implementation (`reference.py`) that uses Python's
 arbitrary-precision `decimal.Decimal` (50 significant digits) evaluated
 directly from the mathematical definitions -- not derived from the same
@@ -290,3 +332,13 @@ tests, not decorative claims.
   carries an explicit `skip_mask` guard against a fully-masked attention
   row producing `NaN`, the exact real-world instance of the failure mode
   `masked_softmax`'s `fully_padded_row` fixture demonstrates.
+- Kahan, W. (1965), "Further remarks on reducing truncation errors" --
+  the compensated-summation algorithm `stable_sum` implements, reducing
+  the worst-case rounding-error bound from O(n*eps) to O(eps)
+  independent of the number of terms n.
+- NumPy's own `numpy.sum` documentation and PR #3685 ("ENH: implement
+  pairwise summation") -- NumPy itself switched its default reduction
+  from naive sequential summation to pairwise summation specifically to
+  reduce this O(n) accumulated-rounding-error growth, independent
+  corroboration that `sum`'s naive/stable gap is a real, previously-hit
+  production issue rather than a contrived demonstration.

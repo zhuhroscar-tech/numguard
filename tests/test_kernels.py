@@ -401,3 +401,60 @@ class TestMaskedSoftmaxAllMaskedNaN:
         plain = kernels.stable_softmax(values, "float64")
         for m, p in zip(masked, plain):
             assert float(m) == pytest.approx(float(p), rel=1e-9)
+
+
+class TestSumAccumulatedRoundingError:
+    """Regression tests pinning summation's distinct O(n) accumulated-
+    rounding-error failure -- neither overflow, cancellation, nor an
+    indeterminate form, but a magnitude of error that grows with the
+    number of terms because naive sequential summation lets the same
+    running total absorb every addition's rounding in sequence."""
+
+    def test_naive_wrong_on_many_small_uniform_terms(self):
+        values = [1e-4] * 20000
+        true_sum = 2.0
+        naive = kernels.naive_sum(values, "float32")
+        stable = kernels.stable_sum(values, "float32")
+        assert math.isfinite(naive) and math.isfinite(stable)
+        assert stable == pytest.approx(true_sum, abs=1e-6)
+        # naive should be measurably off (not just last-bit rounding)
+        assert abs(naive - true_sum) > 1e-4
+
+    def test_naive_wrong_when_large_value_swamps_small_terms(self):
+        values = [1e8] + [1.0] * 20000
+        true_sum = 100020000.0
+        naive = kernels.naive_sum(values, "float32")
+        stable = kernels.stable_sum(values, "float32")
+        assert stable == pytest.approx(true_sum, rel=1e-6)
+        # naive drops most or all of the +1.0 increments once the
+        # accumulator reaches ~1e8 (float32 has ~7 significant digits)
+        assert abs(naive - true_sum) > 1000
+
+    def test_naive_wrong_at_float16_with_far_fewer_terms(self):
+        values = [0.01] * 3000
+        true_sum = 30.0
+        naive = kernels.naive_sum(values, "float16")
+        stable = kernels.stable_sum(values, "float16")
+        assert stable == pytest.approx(true_sum, rel=1e-2)
+        assert abs(naive - true_sum) > 0.5
+
+    def test_naive_and_stable_agree_on_a_handful_of_values(self):
+        # Control: the bug is about scale (many terms), not about naive
+        # summation being wrong in general -- a handful of ordinary
+        # values should agree closely between naive and stable.
+        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        naive = kernels.naive_sum(values, "float64")
+        stable = kernels.stable_sum(values, "float64")
+        assert naive == pytest.approx(15.0, rel=1e-12)
+        assert stable == pytest.approx(15.0, rel=1e-12)
+
+    def test_stable_never_worse_than_naive_across_scales(self):
+        # Property check: Kahan summation's error should never exceed
+        # naive summation's error, across a range of term counts.
+        true_val = 3.0
+        for n in (100, 1000, 10000, 30000):
+            values = [1e-4] * n
+            true_sum = n * 1e-4
+            naive = kernels.naive_sum(values, "float32")
+            stable = kernels.stable_sum(values, "float32")
+            assert abs(stable - true_sum) <= abs(naive - true_sum) + 1e-9

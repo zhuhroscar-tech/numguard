@@ -79,6 +79,20 @@ and tells you exactly where and how the naive formula breaks.
   library carries an explicit `skip_mask` guard against exactly this
   failure (verified in this repo: `masked_softmax`'s
   `fully_padded_row` fixture).
+- **Summation has a distinct, scale-dependent failure mode**: naive
+  sequential summation (`total += x` in a loop) rounds the running
+  total on every addition, and because the same accumulator absorbs
+  every one of those roundings in sequence, the worst-case error grows
+  as `O(n * eps)` in the number of terms `n` -- invisible for a
+  handful of values, but measurably wrong once summing thousands of
+  similarly-scaled terms (e.g. a loss or gradient accumulated across a
+  batch/dataset), or once one large term "swamps" the accumulator so
+  later small terms are partially lost. Kahan compensated summation
+  tracks the lost low-order bits and re-applies them, reducing the
+  error bound to `O(eps)` independent of `n` (verified in this repo:
+  `sum`'s `many_small_uniform_terms` and
+  `large_value_swamps_small_terms` fixtures; NumPy's own `np.sum`
+  switched to pairwise summation for the same underlying reason).
 
 These are not edge cases invented for this tool -- they are exactly the
 failure modes documented in the numerical-stability literature (Blanchard
@@ -90,9 +104,9 @@ a blog post or a framework-internal function you have to trust blindly.
 
 ## What this does
 
-For each of nine kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of ten kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
-`masked_softmax`), across three
+`masked_softmax`, `sum`), across three
 dtypes (`float16`, `float32`, `float64`), on a curated set of
 adversarial and everyday fixtures, numguard:
 

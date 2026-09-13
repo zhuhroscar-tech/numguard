@@ -362,6 +362,61 @@ def stable_masked_softmax(values, mask, dtype):
         return (e / total).astype(dtype)
 
 
+# --- summation (running total over a sequence of terms) -------------------
+
+# Every kernel above is about a single reduction's *range* (overflow/
+# underflow) or a *cancellation*/indeterminate-form/streaming-rescale
+# bug. Summation is algorithmically distinct again: naive sequential
+# summation is neither too large nor cancelling anything -- it is
+# simply the wrong *order* of additions, and its worst-case rounding
+# error grows as O(n*eps) in the number of terms n, a pattern that is
+# completely invisible for the small handful-of-elements fixtures used
+# by every other kernel in this repo but becomes a real, measurable
+# error once n reaches a few thousand -- exactly the scale of a loss
+# aggregated over a batch/dataset, a gradient accumulated over many
+# micro-batches, or numpy's own np.sum switching to pairwise summation
+# specifically to avoid this (numpy docs: "directly adding each number
+# individually to the result causing rounding errors in every step").
+def naive_sum(values, dtype) -> float:
+    """Sequential (left-to-right) running-total summation -- the
+    textbook `for x in xs: total += x` loop. Each addition rounds to
+    the working dtype, and because every one of the n-1 additions
+    accumulates into the same ever-growing running total, the
+    worst-case rounding error grows as O(n * eps) in the number of
+    terms: correct for a handful of values (this is not an overflow or
+    cancellation bug), but measurably wrong once summing many
+    similarly-scaled small terms, or once one large term is present
+    that "swamps" the accumulator so later small terms are partially
+    or fully lost to rounding at the accumulator's own magnitude."""
+    dt = DTYPES[dtype]
+    total = dt(0.0)
+    with np.errstate(over="ignore", invalid="ignore"):
+        for v in values:
+            total = dt(total + dt(v))
+    return float(total)
+
+
+def stable_sum(values, dtype) -> float:
+    """Kahan compensated summation: track a running compensation term
+    `c` for the low-order bits lost on each addition, and fold it back
+    in before the next term is added. This reduces the worst-case
+    rounding-error bound from O(n * eps) to O(eps) (independent of n),
+    the standard mitigation for exactly the accumulator-drift failure
+    naive_sum demonstrates -- see Kahan (1965) / the Kahan-Babuska
+    variant, and numpy's own switch to pairwise summation in np.sum
+    for the same underlying reason."""
+    dt = DTYPES[dtype]
+    total = dt(0.0)
+    compensation = dt(0.0)
+    with np.errstate(over="ignore", invalid="ignore"):
+        for v in values:
+            y = dt(dt(v) - compensation)
+            t = dt(total + y)
+            compensation = dt(dt(t - total) - y)
+            total = t
+    return float(total)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -372,4 +427,5 @@ KERNELS = {
     "kl_divergence": (naive_kl_divergence, stable_kl_divergence),
     "online_softmax": (naive_online_softmax, stable_online_softmax),
     "masked_softmax": (naive_masked_softmax, stable_masked_softmax),
+    "sum": (naive_sum, stable_sum),
 }
