@@ -1,0 +1,9 @@
+fix: drop .pyz zipapp target, numpy C extensions cannot run from a zip
+
+The CI .pyz smoke-test failed on the real ubuntu-latest runner:
+NotADirectoryError on numpy/_core -- compiled extension modules cannot
+be imported from inside a zip archive the way pure-Python code can.
+Build a wheel+sdist and smoke-test the installed wheel in a clean venv
+instead, which is the correct distribution format for a numpy-dependent
+package. README updated to match and to record this as a documented
+limitation rather than silently dropping the artifact.

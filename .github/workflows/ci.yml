@@ -32,7 +32,7 @@ jobs:
           numguard --kernel variance --json | python -m json.tool > /dev/null
 
   build-artifact:
-    name: build wheel + sdist + pyz
+    name: build wheel + sdist
     runs-on: ubuntu-latest
     needs: test
     steps:
@@ -44,19 +44,15 @@ jobs:
         run: |
           python -m pip install build
           python -m build
-      - name: Build standalone .pyz (zipapp)
+      - name: Smoke-test the built wheel on this Linux runner
         run: |
-          python -m pip install --target build/pyz-deps .
-          printf 'from numguard.cli import main\nif __name__ == "__main__":\n    raise SystemExit(main())\n' > build/pyz-deps/__main__.py
-          python -m zipapp build/pyz-deps -o dist/numguard.pyz -p "/usr/bin/env python3"
-      - name: Smoke-test the .pyz on this Linux runner
-        run: |
-          python3 dist/numguard.pyz --version
-          python3 dist/numguard.pyz --kernel variance --json | python3 -m json.tool > /dev/null
-          # Regression check: the .pyz's exit code must reflect the real
-          # command result (self-check mode returns 1 on a real problem).
+          python -m venv /tmp/smoke-venv
+          /tmp/smoke-venv/bin/pip install dist/*.whl
+          /tmp/smoke-venv/bin/numguard --version
+          /tmp/smoke-venv/bin/numguard --kernel variance --json | python3 -m json.tool > /dev/null
+          # Regression check: exit code must reflect the real result.
           set +e
-          python3 dist/numguard.pyz --check-naive-fails > /dev/null 2>&1
+          /tmp/smoke-venv/bin/numguard --check-naive-fails > /dev/null 2>&1
           check_code=$?
           set -e
           test "$check_code" -eq 0

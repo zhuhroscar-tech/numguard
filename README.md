@@ -71,12 +71,13 @@ git clone https://github.com/zhuhroscar-tech/numguard.git
 cd numguard && pip install -e ".[dev]"
 ```
 
-Or grab the standalone `.pyz` from a GitHub Release (no pip/venv needed):
-
-```bash
-curl -LO https://github.com/zhuhroscar-tech/numguard/releases/latest/download/numguard.pyz
-python3 numguard.pyz --help
-```
+Note: unlike this account's other small CLIs, numguard does not ship a
+standalone `.pyz` zipapp -- numpy ships compiled C extension modules
+(`.so` files), which cannot execute from inside a zip archive the way
+pure-Python zipapps can (verified: this was attempted and fails with
+`NotADirectoryError` on the numpy `_core` package). A wheel/sdist
+(installed via pip into a venv) is the correct distribution format for
+a numpy-dependent tool; CI builds and smoke-tests both.
 
 ## Usage
 
@@ -125,9 +126,9 @@ numguard --check-naive-fails
 ```
 
 CI runs this on both `ubuntu-latest` and `macos-latest` across Python
-3.9 and 3.12, then builds a wheel, sdist, and standalone `.pyz`,
-computes `SHA256SUMS.txt`, and smoke-tests the built artifact on the
-Linux runner before publishing a release.
+3.9 and 3.12, then builds a wheel and sdist, computes
+`SHA256SUMS.txt`, and smoke-tests the built wheel (installed into a
+clean venv) on the Linux runner before publishing a release.
 
 ## Limitations
 
