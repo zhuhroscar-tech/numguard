@@ -101,17 +101,46 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
     )
 
 
-def _run_softmax(variant: str, fixture: Fixture, dtype: str) -> CaseResult:
-    naive_fn, stable_fn = kernels.KERNELS["softmax"]
+def _gold_softmax(fixture: Fixture) -> list:
+    return reference.gold_softmax(fixture.values)
+
+
+def _gold_layer_norm(fixture: Fixture) -> list:
+    eps = Decimal(repr(kernels.LAYER_NORM_EPS))
+    return reference.gold_layer_norm(fixture.values, eps)
+
+
+def _gold_rms_norm(fixture: Fixture) -> list:
+    eps = Decimal(repr(kernels.RMS_NORM_EPS))
+    return reference.gold_rms_norm(fixture.values, eps)
+
+
+# Kernels whose naive/stable implementations return a full array (one
+# CaseResult scored across every element) rather than a single scalar.
+# Adding a new array-valued kernel needs exactly one entry here (mapping
+# to its gold-reference callable) instead of a bespoke ~30-line
+# _run_<kernel> function -- the previous per-kernel copies (softmax,
+# layer_norm, rms_norm) were flagged as growing wiring debt in the
+# v0.2.0 and v0.3.0 stewardship reflections and are consolidated here.
+ARRAY_VALUED_GOLD = {
+    "softmax": _gold_softmax,
+    "layer_norm": _gold_layer_norm,
+    "rms_norm": _gold_rms_norm,
+}
+
+
+def _run_array_valued(kernel: str, variant: str, fixture: Fixture, dtype: str) -> CaseResult:
+    naive_fn, stable_fn = kernels.KERNELS[kernel]
     fn = naive_fn if variant == "naive" else stable_fn
     computed = fn(fixture.values, dtype)
-    gold = reference.gold_softmax(fixture.values)
+    gold = ARRAY_VALUED_GOLD[kernel](fixture)
 
     is_finite = bool(all(math.isfinite(float(c)) for c in computed))
-    # softmax must also sum to ~1; a NaN-free but non-normalized result
-    # is still a real bug, so it counts against `ok` via per-element
-    # tolerance (atol + rtol*|gold|, since softmax outputs are often
-    # near zero where pure relative error is the wrong metric).
+    # The output must also match element-wise; a NaN-free but wrong
+    # (e.g. non-normalized softmax, or collapsed-to-zero) result is
+    # still a real bug, so it counts against `ok` via per-element
+    # tolerance (atol + rtol*|gold|, since these outputs are often near
+    # zero where pure relative error is the wrong metric).
     rel_err = None
     ok = False
     if is_finite:
@@ -126,7 +155,7 @@ def _run_softmax(variant: str, fixture: Fixture, dtype: str) -> CaseResult:
         rel_err = max(errs) if errs else None
         ok = all_within
     return CaseResult(
-        kernel="softmax",
+        kernel=kernel,
         variant=variant,
         fixture=fixture.name,
         dtype=dtype,
@@ -136,74 +165,21 @@ def _run_softmax(variant: str, fixture: Fixture, dtype: str) -> CaseResult:
         relative_error=rel_err,
         computed_repr=repr([float(c) for c in computed]),
     )
+
+
+# Thin, name-stable wrappers kept so existing call sites/tests that
+# invoke _run_softmax/_run_layer_norm/_run_rms_norm directly (with their
+# original (variant, fixture, dtype) signature) keep working unchanged.
+def _run_softmax(variant: str, fixture: Fixture, dtype: str) -> CaseResult:
+    return _run_array_valued("softmax", variant, fixture, dtype)
 
 
 def _run_layer_norm(variant: str, fixture: Fixture, dtype: str) -> CaseResult:
-    naive_fn, stable_fn = kernels.KERNELS["layer_norm"]
-    fn = naive_fn if variant == "naive" else stable_fn
-    computed = fn(fixture.values, dtype)
-    eps = Decimal(repr(kernels.LAYER_NORM_EPS))
-    gold = reference.gold_layer_norm(fixture.values, eps)
-
-    is_finite = bool(all(math.isfinite(float(c)) for c in computed))
-    rel_err = None
-    ok = False
-    if is_finite:
-        errs = []
-        all_within = True
-        for c, g in zip(computed, gold):
-            e = _relative_error(float(c), g)
-            if e is not None:
-                errs.append(e)
-            if not _within_tolerance(float(c), float(g), dtype):
-                all_within = False
-        rel_err = max(errs) if errs else None
-        ok = all_within
-    return CaseResult(
-        kernel="layer_norm",
-        variant=variant,
-        fixture=fixture.name,
-        dtype=dtype,
-        description=fixture.description,
-        ok=ok,
-        is_finite=is_finite,
-        relative_error=rel_err,
-        computed_repr=repr([float(c) for c in computed]),
-    )
+    return _run_array_valued("layer_norm", variant, fixture, dtype)
 
 
 def _run_rms_norm(variant: str, fixture: Fixture, dtype: str) -> CaseResult:
-    naive_fn, stable_fn = kernels.KERNELS["rms_norm"]
-    fn = naive_fn if variant == "naive" else stable_fn
-    computed = fn(fixture.values, dtype)
-    eps = Decimal(repr(kernels.RMS_NORM_EPS))
-    gold = reference.gold_rms_norm(fixture.values, eps)
-
-    is_finite = bool(all(math.isfinite(float(c)) for c in computed))
-    rel_err = None
-    ok = False
-    if is_finite:
-        errs = []
-        all_within = True
-        for c, g in zip(computed, gold):
-            e = _relative_error(float(c), g)
-            if e is not None:
-                errs.append(e)
-            if not _within_tolerance(float(c), float(g), dtype):
-                all_within = False
-        rel_err = max(errs) if errs else None
-        ok = all_within
-    return CaseResult(
-        kernel="rms_norm",
-        variant=variant,
-        fixture=fixture.name,
-        dtype=dtype,
-        description=fixture.description,
-        ok=ok,
-        is_finite=is_finite,
-        relative_error=rel_err,
-        computed_repr=repr([float(c) for c in computed]),
-    )
+    return _run_array_valued("rms_norm", variant, fixture, dtype)
 
 
 def run_kernel(kernel: str, dtype: str) -> List[CaseResult]:
@@ -215,12 +191,8 @@ def run_kernel(kernel: str, dtype: str) -> List[CaseResult]:
         if dtype not in fixture.dtypes:
             continue
         for variant in ("naive", "stable"):
-            if kernel == "softmax":
-                results.append(_run_softmax(variant, fixture, dtype))
-            elif kernel == "layer_norm":
-                results.append(_run_layer_norm(variant, fixture, dtype))
-            elif kernel == "rms_norm":
-                results.append(_run_rms_norm(variant, fixture, dtype))
+            if kernel in ARRAY_VALUED_GOLD:
+                results.append(_run_array_valued(kernel, variant, fixture, dtype))
             else:
                 results.append(_run_scalar(kernel, variant, fixture, dtype))
     return results
