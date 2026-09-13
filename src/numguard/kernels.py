@@ -194,6 +194,53 @@ def stable_rms_norm(values, dtype) -> np.ndarray:
         return (x_up / denom).astype(dtype)
 
 
+# --- KL divergence (discrete, two distributions) --------------------------
+
+def naive_kl_divergence(p_values, q_values, dtype: str) -> float:
+    """sum(p_i * log(p_i / q_i)) -- the textbook discrete KL-divergence
+    formula, evaluated literally. Whenever p_i is exactly 0 (an entirely
+    ordinary case -- e.g. a one-hot label vector in distillation/label
+    smoothing, or any sparse target distribution), the mathematically
+    correct convention is that the term contributes exactly 0 (the
+    limit of x*log(x) as x->0 is 0). But IEEE754 float arithmetic
+    computes 0 * log(0/q) as 0 * -inf = NaN, poisoning the entire sum
+    even though the true KL divergence is an ordinary finite number.
+    This is a distinct failure shape from this repo's other kernels:
+    not overflow, not cancellation, but a 0-times-infinity
+    indeterminate form from a literal (non-guarded) formula
+    transcription."""
+    p = _arr(p_values, dtype)
+    q = _arr(q_values, dtype)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        terms = p * np.log(p / q)
+        return float(np.sum(terms))
+
+
+def stable_kl_divergence(p_values, q_values, dtype: str) -> float:
+    """Same quantity, guarding the two indeterminate/undefined cases
+    explicitly instead of letting IEEE754 arithmetic decide:
+    - p_i == 0: contributes exactly 0 regardless of q_i (the standard
+      0*log(0/q) := 0 convention, matching scipy.special.rel_entr/
+      kl_div and the measure-theoretic definition of KL divergence).
+    - p_i > 0 and q_i <= 0: the true KL divergence is +inf (q assigns
+      zero probability to an event p considers possible) -- this is
+      the mathematically CORRECT answer, not a bug to hide, so it is
+      passed through rather than masked.
+    Algebraically this is the identical quantity as the naive formula
+    everywhere p_i > 0 and q_i > 0; it only changes behavior at the
+    two edge cases above, where the naive formula's literal transcription
+    hits an IEEE754 indeterminate form instead of the intended
+    mathematical limit."""
+    p = _arr(p_values, dtype)
+    q = _arr(q_values, dtype)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        safe_q = np.where(q > 0, q, DTYPES[dtype](1.0))
+        terms = p * np.log(p / safe_q)
+        terms = np.where((q <= 0) & (p > 0), np.array(np.inf, dtype=dtype), terms)
+        terms = np.where(p <= 0, DTYPES[dtype](0.0), terms)
+        return float(np.sum(terms.astype(dtype)))
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -201,4 +248,5 @@ KERNELS = {
     "variance": (naive_variance, stable_variance),
     "layer_norm": (naive_layer_norm, stable_layer_norm),
     "rms_norm": (naive_rms_norm, stable_rms_norm),
+    "kl_divergence": (naive_kl_divergence, stable_kl_divergence),
 }

@@ -132,9 +132,46 @@ stable path is identical to the naive path at that precision; this is
 expected, since the bug is about the reduction dtype's *range*, not
 cancellation, and float64's range is already ample.
 
+## KL divergence
+
+**Textbook definition:** `KL(p || q) = sum_i(p_i * log(p_i / q_i))`,
+the discrete Kullback-Leibler divergence between two probability
+distributions `p` and `q`.
+
+**Naive formula** (`naive_kl_divergence`): evaluate the sum literally.
+This has a distinct failure shape from every other kernel in this repo
+-- not overflow, not cancellation, but an IEEE754 *indeterminate form*.
+Whenever `p_i` is exactly `0` (an entirely ordinary case: a one-hot
+label vector in classification distillation, label smoothing, or any
+sparse target distribution), the mathematically correct convention is
+that the term contributes exactly `0` -- this is the standard
+`x*log(x) -> 0` limit as `x -> 0`, used by every serious KL-divergence
+implementation (e.g. `scipy.special.rel_entr`/`kl_div`). But naive
+floating-point arithmetic computes `0 * log(0 / q_i)` as `0 * -inf`,
+which IEEE754 defines as `NaN`, poisoning the entire sum even though
+the true KL divergence is an ordinary finite number. This bug fires on
+the *majority* of terms in one of the single most common real inputs
+to this kernel (a one-hot label vector), not an obscure edge case.
+
+**Stable formula** (`stable_kl_divergence`): guard the two
+mathematically meaningful edge cases explicitly instead of letting
+IEEE754 arithmetic decide by accident:
+- `p_i == 0`: contributes exactly `0`, matching the standard
+  convention, regardless of what `q_i` is.
+- `p_i > 0` and `q_i <= 0`: the true KL divergence is `+inf` (`q`
+  assigns zero probability to an event `p` considers possible) -- this
+  is the mathematically *correct* answer and is passed through rather
+  than masked.
+
+Algebraically this is the identical quantity as the naive formula
+everywhere both `p_i > 0` and `q_i > 0`; it only changes behavior at
+the two edge cases above, where the naive formula's literal
+transcription hits an IEEE754 indeterminate form instead of applying
+the intended mathematical convention/limit.
+
 ## Independent ground truth
 
-All six derivations above are cross-checked in this repository against
+All seven derivations above are cross-checked in this repository against
 an independent implementation (`reference.py`) that uses Python's
 arbitrary-precision `decimal.Decimal` (50 significant digits) evaluated
 directly from the mathematical definitions -- not derived from the same

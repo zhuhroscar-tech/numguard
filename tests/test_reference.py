@@ -126,3 +126,41 @@ def test_gold_rms_norm_never_nan_for_all_zero_input():
     for r in result:
         assert math.isfinite(float(r))
         assert float(r) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_gold_kl_divergence_matches_known_value():
+    # KL([0.2,0.3,0.5] || [0.25,0.25,0.5]) computed by hand via
+    # sum(p*ln(p/q)) ~ 0.010067756775344432 (cross-checked against
+    # scipy.special.rel_entr's convention independently in this test).
+    result = reference.gold_kl_divergence([0.2, 0.3, 0.5], [0.25, 0.25, 0.5])
+    assert float(result) == pytest.approx(0.010067756775344432, rel=1e-9)
+
+
+def test_gold_kl_divergence_zero_for_identical_distributions():
+    result = reference.gold_kl_divergence([0.25, 0.25, 0.25, 0.25], [0.25, 0.25, 0.25, 0.25])
+    assert float(result) == pytest.approx(0.0, abs=1e-30)
+
+
+def test_gold_kl_divergence_zero_probability_contributes_nothing():
+    # p_i == 0 must contribute exactly 0 by convention, not raise or
+    # propagate an indeterminate form -- this is the reference itself
+    # applying the mathematical convention, not a numpy artifact.
+    result = reference.gold_kl_divergence([0.5, 0.0, 0.5], [0.3, 0.3, 0.4])
+    assert float(result) == pytest.approx(0.3669845875401002, rel=1e-9)
+
+
+def test_gold_kl_divergence_infinite_when_q_assigns_zero_to_possible_event():
+    result = reference.gold_kl_divergence([0.5, 0.5], [0.5, 0.0])
+    assert result == Decimal("Infinity")
+
+
+def test_gold_kl_divergence_never_negative():
+    # Gibbs' inequality: KL divergence is always >= 0.
+    for p, q in (
+        ([0.2, 0.3, 0.5], [0.25, 0.25, 0.5]),
+        ([0.1, 0.4, 0.5], [0.2, 0.3, 0.5]),
+        ([0.5, 0.0, 0.5], [0.3, 0.3, 0.4]),
+        ([0.0, 1.0, 0.0, 0.0], [0.25, 0.25, 0.25, 0.25]),
+    ):
+        result = reference.gold_kl_divergence(p, q)
+        assert result >= 0

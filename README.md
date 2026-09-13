@@ -49,6 +49,14 @@ and tells you exactly where and how the naive formula breaks.
   taking a log; if that probability underflows to `0.0`, the result is
   `inf`/`NaN` even though the true cross-entropy is a perfectly
   ordinary finite number.
+- **KL divergence has a different failure shape again**: `sum(p_i *
+  log(p_i / q_i))` hits an IEEE754 `0 * -inf` indeterminate form
+  whenever `p_i` is exactly `0` -- an entirely ordinary case (a
+  one-hot label vector in distillation/label-smoothing is *the* most
+  common real input to this kernel). The naive formula evaluates to
+  `NaN` for the whole sum; the correct answer, by the standard
+  `x*log(x) -> 0` convention, is that the term simply contributes `0`
+  (verified in this repo: `kl_divergence`'s `one_hot_label` fixture).
 
 These are not edge cases invented for this tool -- they are exactly the
 failure modes documented in the numerical-stability literature (Blanchard
@@ -60,10 +68,10 @@ a blog post or a framework-internal function you have to trust blindly.
 
 ## What this does
 
-For each of six kernels (`logsumexp`, `softmax`, `cross_entropy`,
-`variance`, `layer_norm`, `rms_norm`), across three dtypes (`float16`,
-`float32`, `float64`), on a curated set of adversarial and everyday
-fixtures, numguard:
+For each of seven kernels (`logsumexp`, `softmax`, `cross_entropy`,
+`variance`, `layer_norm`, `rms_norm`, `kl_divergence`), across three
+dtypes (`float16`, `float32`, `float64`), on a curated set of
+adversarial and everyday fixtures, numguard:
 
 1. Runs the naive (textbook) formula and the stable (standard
    mitigation) formula, both implemented in plain numpy.

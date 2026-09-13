@@ -202,3 +202,57 @@ class TestRMSNormReductionOverflow:
             stable = kernels.stable_rms_norm(values, dtype)
             assert all(v == 0.0 for v in naive)
             assert all(v == 0.0 for v in stable)
+
+
+class TestKLDivergenceZeroProbabilityNaN:
+    """KL divergence built directly on the textbook sum(p*log(p/q))
+    formula: the headline demonstration that a completely ordinary
+    input (any p_i == 0, e.g. a one-hot label) hits an IEEE754 0*-inf
+    indeterminate form and poisons the whole sum with NaN, even though
+    the true KL divergence is an ordinary finite number by the standard
+    0*log(0/q) := 0 convention."""
+
+    def test_naive_nans_on_single_zero_probability(self):
+        p = [0.5, 0.0, 0.5]
+        q = [0.3, 0.3, 0.4]
+        naive = kernels.naive_kl_divergence(p, q, "float64")
+        stable = kernels.stable_kl_divergence(p, q, "float64")
+        assert math.isnan(naive)
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(0.36698, rel=1e-3)
+
+    def test_naive_nans_on_one_hot_label_across_dtypes(self):
+        # The single most common real input shape for this kernel:
+        # a one-hot label vector against a soft prediction.
+        p = [0.0, 1.0, 0.0, 0.0]
+        q = [0.25, 0.25, 0.25, 0.25]
+        for dtype in ("float16", "float32", "float64"):
+            naive = kernels.naive_kl_divergence(p, q, dtype)
+            stable = kernels.stable_kl_divergence(p, q, dtype)
+            assert math.isnan(naive), f"expected naive NaN at dtype={dtype}"
+            assert math.isfinite(stable), f"expected stable finite at dtype={dtype}"
+            assert stable == pytest.approx(math.log(4), rel=1e-2)
+
+    def test_stable_matches_naive_when_no_zero_probabilities(self):
+        # Zero-free inputs: naive and stable should agree closely --
+        # the guard logic must not change the answer when it isn't needed.
+        p = [0.2, 0.3, 0.5]
+        q = [0.25, 0.25, 0.5]
+        naive = kernels.naive_kl_divergence(p, q, "float64")
+        stable = kernels.stable_kl_divergence(p, q, "float64")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(stable, rel=1e-9)
+
+    def test_identical_distributions_is_zero(self):
+        p = q = [0.25, 0.25, 0.25, 0.25]
+        stable = kernels.stable_kl_divergence(p, q, "float64")
+        assert stable == pytest.approx(0.0, abs=1e-9)
+
+    def test_stable_is_infinite_when_q_assigns_zero_to_possible_event(self):
+        # p says an event can happen (p_i > 0) but q says it can't
+        # (q_i == 0) -- the true KL divergence is +inf, and the stable
+        # kernel must report that correctly rather than mask it.
+        p = [0.5, 0.5]
+        q = [0.5, 0.0]
+        stable = kernels.stable_kl_divergence(p, q, "float64")
+        assert math.isinf(stable) and stable > 0

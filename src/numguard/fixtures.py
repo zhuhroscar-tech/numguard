@@ -7,7 +7,7 @@ a randomly generated array. Deterministic and reviewable by hand.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,10 @@ class Fixture:
     values: Sequence[float]
     description: str
     target_index: int = 0  # used by cross_entropy fixtures
+    # Second distribution, used only by kl_divergence fixtures (values
+    # above is treated as "p", q_values as "q" in KL(p || q)). None for
+    # every other kernel.
+    q_values: Optional[Sequence[float]] = None
     # Which dtypes this fixture is meaningful for. Some adversarial cases
     # only demonstrate their failure mode at a particular precision (e.g.
     # an offset that overflows float16 outright isn't a fair "naive vs
@@ -257,6 +261,64 @@ RMS_NORM_FIXTURES = [
     ),
 ]
 
+KL_DIVERGENCE_FIXTURES = [
+    Fixture(
+        "everyday_close",
+        [0.2, 0.3, 0.5],
+        "Two ordinary, fully-supported distributions close to each "
+        "other -- no zero probabilities anywhere, so the naive literal "
+        "formula has nothing to trip on; both formulas should agree "
+        "closely (true KL(p||q) ~ 0.01007).",
+        q_values=[0.25, 0.25, 0.5],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "mild_mismatch",
+        [0.1, 0.4, 0.5],
+        "Two ordinary distributions with a bigger but still fully-"
+        "supported mismatch -- another zero-free control case (true "
+        "KL(p||q) ~ 0.0458).",
+        q_values=[0.2, 0.3, 0.5],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "single_zero_probability",
+        [0.5, 0.0, 0.5],
+        "p has one exactly-zero entry -- an entirely ordinary case "
+        "(e.g. a token or class the reference distribution assigns no "
+        "mass to). By convention that term contributes exactly 0 (the "
+        "limit of x*log(x) as x->0), so the true KL divergence here is "
+        "an ordinary finite number (~0.36698). The naive formula "
+        "computes 0 * log(0/q) = 0 * -inf, an IEEE754 indeterminate "
+        "form that evaluates to NaN, poisoning the entire sum -- "
+        "verified directly in this repo's test suite.",
+        q_values=[0.3, 0.3, 0.4],
+    ),
+    Fixture(
+        "one_hot_label",
+        [0.0, 1.0, 0.0, 0.0],
+        "A one-hot label vector against a soft prediction -- the exact "
+        "shape of input KL divergence receives constantly in "
+        "classification distillation/label-smoothing pipelines. Three "
+        "of the four p_i are exactly 0 here (not a contrived edge "
+        "case -- this is the single most common real input shape for "
+        "this kernel), so the naive formula's 0*-inf NaN bug fires on "
+        "the majority of terms in completely ordinary usage (true "
+        "KL(p||q) ~ 1.3863, since p is a point mass and q is uniform).",
+        q_values=[0.25, 0.25, 0.25, 0.25],
+    ),
+    Fixture(
+        "identical_distributions",
+        [0.25, 0.25, 0.25, 0.25],
+        "p equals q exactly -- true KL divergence is exactly 0 "
+        "(Gibbs' inequality's equality case). An easy control: no "
+        "zero-probability terms, no mismatch, both formulas should "
+        "report ~0.0.",
+        q_values=[0.25, 0.25, 0.25, 0.25],
+        expect_naive_ok=True,
+    ),
+]
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -264,6 +326,7 @@ FIXTURES_BY_KERNEL = {
     "variance": VARIANCE_FIXTURES,
     "layer_norm": LAYER_NORM_FIXTURES,
     "rms_norm": RMS_NORM_FIXTURES,
+    "kl_divergence": KL_DIVERGENCE_FIXTURES,
 }
 
 
