@@ -70,3 +70,25 @@ def test_gold_variance_never_negative():
 
 def test_gold_sum_matches_known_total():
     assert float(reference.gold_sum([1.0, 2.0, 3.0, 4.0])) == pytest.approx(10.0)
+
+
+def test_gold_layer_norm_matches_known_values():
+    # [1,2,3,4,5]: mean=3, variance=2, eps=1e-5 -> (x-3)/sqrt(2+1e-5)
+    result = reference.gold_layer_norm([1.0, 2.0, 3.0, 4.0, 5.0], Decimal("1e-5"))
+    expected = [(x - 3.0) / math.sqrt(2.0 + 1e-5) for x in [1.0, 2.0, 3.0, 4.0, 5.0]]
+    for r, e in zip(result, expected):
+        assert float(r) == pytest.approx(e, rel=1e-6)
+
+
+def test_gold_layer_norm_middle_element_near_zero_for_symmetric_input():
+    result = reference.gold_layer_norm([1.0, 2.0, 3.0, 4.0, 5.0], Decimal("1e-5"))
+    assert float(result[2]) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_gold_layer_norm_never_nan_even_for_zero_variance_without_eps_it_would_divide_by_zero():
+    # identical values -> variance is exactly 0; the eps term keeps the
+    # denominator away from a literal division by zero
+    result = reference.gold_layer_norm([7.0, 7.0, 7.0], Decimal("1e-5"))
+    for r in result:
+        assert math.isfinite(float(r))
+        assert float(r) == pytest.approx(0.0, abs=1e-2)

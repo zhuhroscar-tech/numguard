@@ -153,11 +153,67 @@ VARIANCE_FIXTURES = [
     ),
 ]
 
+LAYER_NORM_FIXTURES = [
+    Fixture(
+        "everyday_small",
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        "Ordinary small values -- naive one-pass variance under the "
+        "hood has no cancellation to lose here, so naive and stable "
+        "LayerNorm should agree closely at every dtype.",
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "modest_offset_float16",
+        [100.0, 101.0, 102.0, 103.0],
+        "float16's naive one-pass variance collapses to 0.0 for this "
+        "input (see the identical variance fixture) -- feeding that "
+        "near-zero denominator into LayerNorm's sqrt(var + eps) "
+        "produces normalized outputs off by roughly 350x from the "
+        "true values, not a subtle rounding difference.",
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "large_offset_negative_variance",
+        [1_000_000.0, 1_000_001.0, 1_000_002.0, 1_000_003.0],
+        "The naive one-pass variance formula (E[x^2]-E[x]^2) goes "
+        "*negative* for this input at float32 (verified: -65536.0 "
+        "against a true variance of 1.25) -- LayerNorm's sqrt(var + "
+        "eps) then takes the square root of a negative number and "
+        "every output element is NaN. This is the sharpest possible "
+        "demonstration that the naive variance bug is not cosmetic: "
+        "it can NaN out an entire activation tensor.",
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "very_large_offset",
+        [3_000_000.0, 3_000_001.0, 3_000_002.0, 3_000_003.0],
+        "Same integer spread (true variance 1.25) at a larger offset "
+        "where naive variance comes out positive but wildly wrong "
+        "(1048576.0 instead of 1.25) -- LayerNorm output is still "
+        "finite here but shrunk by roughly 1000x versus the correct "
+        "normalized values, a different failure shape than the NaN "
+        "case above but equally wrong.",
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "zero_variance_large_offset",
+        [5_000_000.0] * 6,
+        "True variance is exactly 0 with identical values -- an easy "
+        "control case for both formulas; LayerNorm's eps term keeps "
+        "the denominator away from a literal 0/0 and every output is "
+        "exactly 0.0 either way. Excluded from float16 for the same "
+        "overflow reason as the variance control fixture.",
+        dtypes=("float32", "float64"),
+        expect_naive_ok=True,
+    ),
+]
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
     "cross_entropy": CROSS_ENTROPY_FIXTURES,
     "variance": VARIANCE_FIXTURES,
+    "layer_norm": LAYER_NORM_FIXTURES,
 }
 
 

@@ -102,3 +102,49 @@ class TestEverydayCasesAgree:
         stable = kernels.stable_variance(values, "float64")
         assert naive == pytest.approx(2.0, rel=1e-9)
         assert stable == pytest.approx(2.0, rel=1e-9)
+
+
+class TestLayerNormNegativeVarianceNaN:
+    """LayerNorm built directly on the naive one-pass variance formula:
+    the headline demonstration that the variance-cancellation bug is not
+    merely imprecise, it can propagate all the way to NaN activations."""
+
+    def test_naive_nans_out_on_negative_variance(self):
+        values = [1_000_000.0, 1_000_001.0, 1_000_002.0, 1_000_003.0]
+        naive = kernels.naive_layer_norm(values, "float32")
+        stable = kernels.stable_layer_norm(values, "float32")
+        # naive variance is negative here (see TestVarianceCancellation),
+        # so sqrt(negative + eps) is NaN and every output element is NaN
+        assert all(math.isnan(v) for v in naive)
+        assert all(math.isfinite(v) for v in stable)
+
+    def test_naive_wrong_by_three_orders_of_magnitude_when_finite(self):
+        # a larger offset where naive variance is positive but still
+        # wildly wrong (1048576.0 vs true 1.25) -- naive_layer_norm is
+        # finite here but shrunk by ~1000x relative to the true values
+        values = [3_000_000.0, 3_000_001.0, 3_000_002.0, 3_000_003.0]
+        naive = kernels.naive_layer_norm(values, "float32")
+        stable = kernels.stable_layer_norm(values, "float32")
+        assert all(math.isfinite(v) for v in naive)
+        # true normalized values are close to +-1.34/+-0.45; naive
+        # values here are shrunk to ~0.001-0.0015 in magnitude
+        assert all(abs(v) < 0.01 for v in naive)
+        assert float(stable[0]) == pytest.approx(-1.3416407, rel=1e-4)
+
+    def test_stable_never_nan_across_offsets(self):
+        for offset in (0.0, 100.0, 1_000_000.0, 3_000_000.0):
+            values = [offset, offset + 1.0, offset + 2.0, offset + 3.0]
+            for dtype in ("float32", "float64"):
+                result = kernels.stable_layer_norm(values, dtype)
+                assert all(
+                    math.isfinite(v) for v in result
+                ), f"stable_layer_norm produced non-finite output at offset={offset} dtype={dtype}"
+
+    def test_everyday_values_naive_and_stable_agree(self):
+        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        naive = kernels.naive_layer_norm(values, "float64")
+        stable = kernels.stable_layer_norm(values, "float64")
+        for n, s in zip(naive, stable):
+            assert float(n) == pytest.approx(float(s), rel=1e-6)
+        # mean-centered, unit-ish variance: middle element should sit at 0
+        assert float(stable[2]) == pytest.approx(0.0, abs=1e-9)

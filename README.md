@@ -25,6 +25,13 @@ and tells you exactly where and how the naive formula breaks.
   intro stats courses) subtracts two large, nearly-equal numbers when
   the data is offset far from zero -- classic catastrophic
   cancellation, and it can even go negative.
+- **That negative-variance bug is not just cosmetic**: LayerNorm --
+  used in essentially every Transformer block -- divides by
+  `sqrt(variance + eps)`. Build LayerNorm on top of the naive one-pass
+  variance formula and a negative variance means `sqrt()` of a negative
+  number: every element of the normalized output becomes `NaN`, silently,
+  for perfectly ordinary-looking input activations (verified in this
+  repo: `layer_norm`'s `large_offset_negative_variance` fixture).
 - `-log(softmax(x)[target])` computes an explicit probability before
   taking a log; if that probability underflows to `0.0`, the result is
   `inf`/`NaN` even though the true cross-entropy is a perfectly
@@ -40,9 +47,10 @@ a blog post or a framework-internal function you have to trust blindly.
 
 ## What this does
 
-For each of four kernels (`logsumexp`, `softmax`, `cross_entropy`,
-`variance`), across three dtypes (`float16`, `float32`, `float64`), on a
-curated set of adversarial and everyday fixtures, numguard:
+For each of five kernels (`logsumexp`, `softmax`, `cross_entropy`,
+`variance`, `layer_norm`), across three dtypes (`float16`, `float32`,
+`float64`), on a curated set of adversarial and everyday fixtures,
+numguard:
 
 1. Runs the naive (textbook) formula and the stable (standard
    mitigation) formula, both implemented in plain numpy.

@@ -95,3 +95,48 @@ def test_run_softmax_flags_out_of_tolerance_even_if_finite():
     assert result.is_finite is True
     assert result.ok is False
     assert result.relative_error is not None and result.relative_error > 0
+
+
+def test_run_layer_norm_marks_non_finite_output_as_not_ok():
+    """layer_norm goes through the array-valued _run_layer_norm path
+    (like softmax, unlike the scalar kernels) -- confirm it correctly
+    flags a non-finite (NaN) result rather than crashing or reporting ok."""
+    results = core.run_kernel("layer_norm", "float32")
+    naive_negvar = [
+        r for r in results
+        if r.variant == "naive" and r.fixture == "large_offset_negative_variance"
+    ]
+    assert len(naive_negvar) == 1
+    assert naive_negvar[0].is_finite is False
+    assert naive_negvar[0].ok is False
+
+    stable_negvar = [
+        r for r in results
+        if r.variant == "stable" and r.fixture == "large_offset_negative_variance"
+    ]
+    assert len(stable_negvar) == 1
+    assert stable_negvar[0].is_finite is True
+    assert stable_negvar[0].ok is True
+
+
+def test_run_layer_norm_flags_out_of_tolerance_even_if_finite():
+    """Mirrors test_run_softmax_flags_out_of_tolerance_even_if_finite for
+    the layer_norm array-valued path: a finite but wrong result must be
+    scored not-ok, not just checked for NaN/inf."""
+    from numguard.fixtures import Fixture
+
+    fixture = Fixture("wrong_but_finite", [1.0, 2.0, 3.0], "control case")
+
+    def wrong_layer_norm(values, dtype):
+        return [0.0, 0.0, 0.0]
+
+    original = core.kernels.KERNELS["layer_norm"]
+    core.kernels.KERNELS["layer_norm"] = (wrong_layer_norm, wrong_layer_norm)
+    try:
+        result = core._run_layer_norm("naive", fixture, "float32")
+    finally:
+        core.kernels.KERNELS["layer_norm"] = original
+
+    assert result.is_finite is True
+    assert result.ok is False
+    assert result.relative_error is not None and result.relative_error > 0

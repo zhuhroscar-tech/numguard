@@ -95,9 +95,51 @@ def stable_variance(values, dtype: str) -> float:
         return float(np.mean(centered ** 2))
 
 
+# --- layer normalization ---------------------------------------------------
+
+# Standard LayerNorm epsilon (matches torch.nn.LayerNorm / TF's default),
+# added inside the sqrt purely to avoid a literal division by zero when
+# variance is exactly 0 -- NOT large enough to rescue a naive variance
+# that has gone catastrophically wrong (see large_offset_negative_variance
+# fixture, where the naive one-pass variance formula produces a *negative*
+# number and sqrt(negative + eps) is still NaN).
+LAYER_NORM_EPS = 1e-5
+
+
+def naive_layer_norm(values, dtype) -> np.ndarray:
+    """(x - mean) / sqrt(E[x^2] - E[x]^2 + eps) -- LayerNorm built directly
+    on top of the naive one-pass variance formula. This is the shape of
+    bug that reaches production when someone implements LayerNorm from
+    the textbook variance formula instead of a mean-centered one: it is
+    not just "less precise", it can hand sqrt() a negative number and
+    silently produce NaN/inf activations for every element."""
+    x = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean = np.mean(x)
+        mean_sq = np.mean(x.astype(dtype) ** 2)
+        sq_mean = np.mean(x) ** 2
+        var = mean_sq - sq_mean
+        denom = np.sqrt(np.asarray(var + DTYPES[dtype](LAYER_NORM_EPS), dtype=dtype))
+        return ((x - mean) / denom).astype(dtype)
+
+
+def stable_layer_norm(values, dtype) -> np.ndarray:
+    """(x - mean) / sqrt(mean((x - mean)^2) + eps) -- mean-centered
+    (two-pass) variance first, so the value under the square root can
+    never go negative from cancellation."""
+    x = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean = np.mean(x)
+        centered = (x - mean).astype(dtype)
+        var = np.mean(centered ** 2)
+        denom = np.sqrt(np.asarray(var + DTYPES[dtype](LAYER_NORM_EPS), dtype=dtype))
+        return (centered / denom).astype(dtype)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
     "cross_entropy": (naive_cross_entropy, stable_cross_entropy),
     "variance": (naive_variance, stable_variance),
+    "layer_norm": (naive_layer_norm, stable_layer_norm),
 }

@@ -95,3 +95,17 @@ def gold_sum(values: Sequence[float]) -> Decimal:
     for x in xs:
         total = ctx.add(total, x)
     return total
+
+
+def gold_layer_norm(values: Sequence[float], eps: Decimal) -> list:
+    """(x - mean) / sqrt(variance + eps), from the textbook definition at
+    50-digit precision -- variance here is always the mean-centered
+    (numerically safe) population variance, since that is the
+    mathematically correct quantity regardless of which formula a naive
+    implementation uses to *approximate* it."""
+    ctx = _ctx()
+    xs = _to_decimals(values)
+    mean = gold_mean(values)
+    var = gold_variance(values)
+    denom = (var + eps).sqrt(ctx)
+    return [ctx.divide(ctx.subtract(x, mean), denom) for x in xs]

@@ -6,4 +6,4 @@ cross-entropy, and variance against an independent high-precision
 float64 precision.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
