@@ -109,3 +109,22 @@ def gold_layer_norm(values: Sequence[float], eps: Decimal) -> list:
     var = gold_variance(values)
     denom = (var + eps).sqrt(ctx)
     return [ctx.divide(ctx.subtract(x, mean), denom) for x in xs]
+
+
+def gold_rms_norm(values: Sequence[float], eps: Decimal) -> list:
+    """x / sqrt(mean(x^2) + eps), from the textbook RMSNorm definition
+    at 50-digit precision -- unlike gold_layer_norm this is NOT mean-
+    centered (RMSNorm deliberately omits mean-subtraction, that is the
+    whole point of the "RMS" simplification versus LayerNorm), so the
+    quantity under the square root is the raw mean of squares, exactly
+    as both the naive and stable numpy kernels intend to approximate --
+    the difference under test is only *which dtype the reduction runs
+    in*, not the mathematical formula itself."""
+    ctx = _ctx()
+    xs = _to_decimals(values)
+    total_sq = ctx.create_decimal(0)
+    for x in xs:
+        total_sq = ctx.add(total_sq, ctx.multiply(x, x))
+    ms = ctx.divide(total_sq, ctx.create_decimal(len(xs)))
+    denom = (ms + eps).sqrt(ctx)
+    return [ctx.divide(x, denom) for x in xs]

@@ -136,10 +136,69 @@ def stable_layer_norm(values, dtype) -> np.ndarray:
         return (centered / denom).astype(dtype)
 
 
+# --- RMS normalization ---------------------------------------------------
+
+# Matches the epsilon used by real RMSNorm implementations (e.g. HF
+# Transformers' LlamaRMSNorm/T5LayerNorm default of 1e-6, PyTorch's
+# nn.RMSNorm default of 1e-5-ish depending on version) -- picked to match
+# LAYER_NORM_EPS above so the two normalization kernels are directly
+# comparable, not because the exact value matters to the bug being shown.
+RMS_NORM_EPS = 1e-5
+
+# Which dtype to upcast the reduction (mean of squares) into before
+# taking the sqrt, for each input dtype -- this mirrors the standard
+# mitigation used by real frameworks (e.g. LlamaRMSNorm/T5LayerNorm in
+# HF Transformers call `hidden_states.to(torch.float32).pow(2).mean(...)`
+# specifically because bf16/fp16 activations are kept in low precision
+# for memory/speed but the *reduction* is done in fp32 to avoid this
+# exact overflow bug). float64 has nowhere higher to upcast to, so it
+# upcasts to itself -- the stable path is then identical to the naive
+# one at float64, which is expected: this kernel's bug is about the
+# reduction dtype's *range*, not catastrophic cancellation, so float64's
+# already-ample range means there is nothing to fix at that precision.
+RMS_NORM_UPCAST = {"float16": "float32", "float32": "float64", "float64": "float64"}
+
+
+def naive_rms_norm(values, dtype) -> np.ndarray:
+    """x / sqrt(mean(x^2) + eps), with the reduction (mean of squares)
+    computed in the *same* narrow dtype as the input activations -- the
+    shape of bug that reaches production when a low-precision (fp16)
+    activation tensor is RMS-normalized without upcasting the reduction
+    first. Unlike layer_norm's naive formula (which can cancel to a
+    negative variance), this failure mode is pure dtype-range overflow:
+    squaring an ordinary-looking float16 activation (e.g. ~300) already
+    exceeds float16's ~65504 max, so mean(x^2) silently overflows to inf,
+    and inf/inf (or x/inf) collapses every output to 0.0 or NaN --
+    the opposite failure shape from layer_norm's NaN-from-cancellation,
+    but just as wrong."""
+    x = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        ms = np.mean(x.astype(DTYPES[dtype]) ** 2)
+        denom = np.sqrt(np.asarray(ms + DTYPES[dtype](RMS_NORM_EPS), dtype=dtype))
+        return (x / denom).astype(dtype)
+
+
+def stable_rms_norm(values, dtype) -> np.ndarray:
+    """x / sqrt(mean(x^2) + eps), with the reduction upcast to a wider
+    dtype first (RMS_NORM_UPCAST) -- the standard real-world mitigation:
+    keep the activation tensor itself in its original (possibly narrow)
+    dtype for memory/speed, but compute the sum-of-squares reduction at
+    higher precision so it cannot silently overflow the way the naive
+    path does."""
+    x = _arr(values, dtype)
+    up = DTYPES[RMS_NORM_UPCAST[dtype]]
+    with np.errstate(over="ignore", invalid="ignore"):
+        x_up = x.astype(up)
+        ms = np.mean(x_up ** 2)
+        denom = np.sqrt(x_up.dtype.type(ms) + up(RMS_NORM_EPS))
+        return (x_up / denom).astype(dtype)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
     "cross_entropy": (naive_cross_entropy, stable_cross_entropy),
     "variance": (naive_variance, stable_variance),
     "layer_norm": (naive_layer_norm, stable_layer_norm),
+    "rms_norm": (naive_rms_norm, stable_rms_norm),
 }

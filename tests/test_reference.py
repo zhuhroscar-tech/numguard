@@ -92,3 +92,37 @@ def test_gold_layer_norm_never_nan_even_for_zero_variance_without_eps_it_would_d
     for r in result:
         assert math.isfinite(float(r))
         assert float(r) == pytest.approx(0.0, abs=1e-2)
+
+
+def test_gold_rms_norm_matches_known_values():
+    # [1,2,3,4,5]: mean(x^2) = (1+4+9+16+25)/5 = 11, eps=1e-5
+    # -> x / sqrt(11 + 1e-5), NOT mean-centered (unlike layer_norm).
+    result = reference.gold_rms_norm([1.0, 2.0, 3.0, 4.0, 5.0], Decimal("1e-5"))
+    denom = math.sqrt(11.0 + 1e-5)
+    expected = [x / denom for x in [1.0, 2.0, 3.0, 4.0, 5.0]]
+    for r, e in zip(result, expected):
+        assert float(r) == pytest.approx(e, rel=1e-6)
+
+
+def test_gold_rms_norm_is_not_mean_centered_unlike_layer_norm():
+    # A symmetric-around-zero input has mean 0, so layer_norm and
+    # rms_norm coincide there -- use an offset input to show rms_norm
+    # does NOT subtract the mean the way layer_norm does.
+    values = [10.0, 11.0, 12.0]
+    rms_result = reference.gold_rms_norm(values, Decimal("1e-5"))
+    layer_result = reference.gold_layer_norm(values, Decimal("1e-5"))
+    # rms_norm output should all share the same sign as the (all-
+    # positive) input, since there is no mean-subtraction; layer_norm's
+    # middle element sits at ~0 (mean-centered), rms_norm's does not.
+    assert all(float(r) > 0 for r in rms_result)
+    assert float(layer_result[1]) == pytest.approx(0.0, abs=1e-9)
+    assert float(rms_result[1]) != pytest.approx(0.0, abs=1e-2)
+
+
+def test_gold_rms_norm_never_nan_for_all_zero_input():
+    # all-zero -> mean(x^2) is exactly 0; eps keeps the denominator away
+    # from a literal division by zero.
+    result = reference.gold_rms_norm([0.0, 0.0, 0.0], Decimal("1e-5"))
+    for r in result:
+        assert math.isfinite(float(r))
+        assert float(r) == pytest.approx(0.0, abs=1e-9)

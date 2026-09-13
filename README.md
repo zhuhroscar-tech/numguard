@@ -32,6 +32,19 @@ and tells you exactly where and how the naive formula breaks.
   number: every element of the normalized output becomes `NaN`, silently,
   for perfectly ordinary-looking input activations (verified in this
   repo: `layer_norm`'s `large_offset_negative_variance` fixture).
+- **RMSNorm has a distinct, arguably sneakier failure mode**: unlike
+  LayerNorm, RMSNorm (used in LLaMA, T5, and most modern LLMs in place
+  of LayerNorm) has nothing to cancel -- there is no mean-subtraction --
+  but its `mean(x^2)` reduction still needs to fit inside whatever
+  dtype it runs in. Keep that reduction in the activation's own narrow
+  dtype (float16) and *ordinary*, non-adversarial-looking activation
+  values (e.g. ~300) square to ~90000, already past float16's ~65504
+  max: `mean(x^2)` silently overflows to `inf`, and `x / sqrt(inf)`
+  collapses every output to a *finite-looking* `0.0` -- not an obvious
+  `NaN`/`inf` that would get noticed immediately (verified in this
+  repo: `rms_norm`'s `fp16_activation_overflow` fixture). This is
+  exactly why real implementations (e.g. HF Transformers'
+  `LlamaRMSNorm`) upcast the reduction to float32 before squaring.
 - `-log(softmax(x)[target])` computes an explicit probability before
   taking a log; if that probability underflows to `0.0`, the result is
   `inf`/`NaN` even though the true cross-entropy is a perfectly
@@ -47,10 +60,10 @@ a blog post or a framework-internal function you have to trust blindly.
 
 ## What this does
 
-For each of five kernels (`logsumexp`, `softmax`, `cross_entropy`,
-`variance`, `layer_norm`), across three dtypes (`float16`, `float32`,
-`float64`), on a curated set of adversarial and everyday fixtures,
-numguard:
+For each of six kernels (`logsumexp`, `softmax`, `cross_entropy`,
+`variance`, `layer_norm`, `rms_norm`), across three dtypes (`float16`,
+`float32`, `float64`), on a curated set of adversarial and everyday
+fixtures, numguard:
 
 1. Runs the naive (textbook) formula and the stable (standard
    mitigation) formula, both implemented in plain numpy.

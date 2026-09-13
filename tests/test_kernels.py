@@ -148,3 +148,57 @@ class TestLayerNormNegativeVarianceNaN:
             assert float(n) == pytest.approx(float(s), rel=1e-6)
         # mean-centered, unit-ish variance: middle element should sit at 0
         assert float(stable[2]) == pytest.approx(0.0, abs=1e-9)
+
+
+class TestRMSNormReductionOverflow:
+    """RMSNorm built with the reduction (mean of squares) kept in a
+    narrow dtype: the headline demonstration that this is a *distinct*
+    failure shape from layer_norm's cancellation-to-NaN -- here ordinary,
+    non-adversarial-looking activation values overflow mean(x^2) to inf
+    purely from dtype range, and every output silently collapses to
+    0.0 rather than NaN."""
+
+    def test_naive_collapses_to_zero_on_fp16_activation_overflow(self):
+        # Ordinary-looking float16 activations (not pathological): any
+        # one squared (~90000) already exceeds float16's ~65504 max.
+        values = [300.0, 305.0, 298.0, 310.0, 301.0]
+        naive = kernels.naive_rms_norm(values, "float16")
+        stable = kernels.stable_rms_norm(values, "float16")
+        assert all(v == 0.0 for v in naive)
+        assert all(math.isfinite(v) and v != 0.0 for v in stable)
+
+    def test_naive_collapses_to_zero_on_float32_extreme_overflow(self):
+        # Same failure shape one dtype up: squares (~4e38) exceed
+        # float32's ~3.4e38 max.
+        values = [2e19, 2.1e19, 1.9e19, 2.05e19, 1.95e19]
+        naive = kernels.naive_rms_norm(values, "float32")
+        stable = kernels.stable_rms_norm(values, "float32")
+        assert all(v == 0.0 for v in naive)
+        assert all(math.isfinite(v) and v != 0.0 for v in stable)
+
+    def test_stable_never_collapses_across_scales(self):
+        for values, dtype in (
+            ([300.0, 305.0, 298.0, 310.0, 301.0], "float16"),
+            ([2e19, 2.1e19, 1.9e19, 2.05e19, 1.95e19], "float32"),
+            ([1.0, 2.0, 3.0, 4.0, 5.0], "float64"),
+        ):
+            result = kernels.stable_rms_norm(values, dtype)
+            assert all(
+                math.isfinite(v) and v != 0.0 for v in result
+            ), f"stable_rms_norm collapsed at dtype={dtype}"
+
+    def test_everyday_values_naive_and_stable_agree(self):
+        values = [1.0, 2.0, 3.0, 4.0, 5.0]
+        naive = kernels.naive_rms_norm(values, "float64")
+        stable = kernels.stable_rms_norm(values, "float64")
+        for n, s in zip(naive, stable):
+            assert float(n) == pytest.approx(float(s), rel=1e-6)
+
+    def test_all_zero_input_is_zero_not_nan(self):
+        # eps guards the 0/0 case for both variants.
+        values = [0.0, 0.0, 0.0, 0.0, 0.0]
+        for dtype in ("float16", "float32", "float64"):
+            naive = kernels.naive_rms_norm(values, dtype)
+            stable = kernels.stable_rms_norm(values, dtype)
+            assert all(v == 0.0 for v in naive)
+            assert all(v == 0.0 for v in stable)

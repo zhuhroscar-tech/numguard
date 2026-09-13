@@ -208,12 +208,62 @@ LAYER_NORM_FIXTURES = [
     ),
 ]
 
+RMS_NORM_FIXTURES = [
+    Fixture(
+        "everyday_small",
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        "Ordinary small values, well within every dtype's range -- "
+        "mean(x^2) has nothing to overflow here, so naive (reduction "
+        "kept in the input dtype) and stable (reduction upcast) "
+        "RMSNorm should agree closely at every dtype.",
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "fp16_activation_overflow",
+        [300.0, 305.0, 298.0, 310.0, 301.0],
+        "Realistic-looking float16 activation values (not pathological "
+        "-- just ordinary mid-size numbers a real Transformer layer "
+        "could produce). Squaring any of them (~90000) already exceeds "
+        "float16's ~65504 max, so the naive reduction (mean(x^2) kept "
+        "in float16) silently overflows to inf, and x / sqrt(inf) "
+        "collapses every output to 0.0 -- a *finite-looking*, "
+        "silently wrong answer, not an obvious NaN/inf that would get "
+        "noticed immediately. This is exactly why real RMSNorm "
+        "implementations (e.g. HF Transformers' LlamaRMSNorm) upcast "
+        "the reduction to float32 before squaring.",
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "float32_extreme_overflow",
+        [2e19, 2.1e19, 1.9e19, 2.05e19, 1.95e19],
+        "Same failure shape one dtype up: values whose square "
+        "(~4e38) exceeds float32's ~3.4e38 max, so the naive "
+        "float32-kept reduction overflows mean(x^2) to inf and every "
+        "output collapses to 0.0, while upcasting the reduction to "
+        "float64 (ample range for this magnitude) recovers the "
+        "correct, evenly-scaled normalized output.",
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "zero_all",
+        [0.0, 0.0, 0.0, 0.0, 0.0],
+        "All-zero input -- an easy control case for both formulas: "
+        "mean(x^2) is exactly 0, the eps term keeps the denominator "
+        "away from a literal 0/0, and every output is exactly 0.0 "
+        "either way. Included as a baseline showing the eps guard "
+        "works correctly on its own, independent of the overflow bug "
+        "this kernel targets.",
+        expect_naive_ok=True,
+    ),
+]
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
     "cross_entropy": CROSS_ENTROPY_FIXTURES,
     "variance": VARIANCE_FIXTURES,
     "layer_norm": LAYER_NORM_FIXTURES,
+    "rms_norm": RMS_NORM_FIXTURES,
 }
 
 

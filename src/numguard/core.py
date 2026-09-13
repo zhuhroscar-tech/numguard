@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -172,6 +172,40 @@ def _run_layer_norm(variant: str, fixture: Fixture, dtype: str) -> CaseResult:
     )
 
 
+def _run_rms_norm(variant: str, fixture: Fixture, dtype: str) -> CaseResult:
+    naive_fn, stable_fn = kernels.KERNELS["rms_norm"]
+    fn = naive_fn if variant == "naive" else stable_fn
+    computed = fn(fixture.values, dtype)
+    eps = Decimal(repr(kernels.RMS_NORM_EPS))
+    gold = reference.gold_rms_norm(fixture.values, eps)
+
+    is_finite = bool(all(math.isfinite(float(c)) for c in computed))
+    rel_err = None
+    ok = False
+    if is_finite:
+        errs = []
+        all_within = True
+        for c, g in zip(computed, gold):
+            e = _relative_error(float(c), g)
+            if e is not None:
+                errs.append(e)
+            if not _within_tolerance(float(c), float(g), dtype):
+                all_within = False
+        rel_err = max(errs) if errs else None
+        ok = all_within
+    return CaseResult(
+        kernel="rms_norm",
+        variant=variant,
+        fixture=fixture.name,
+        dtype=dtype,
+        description=fixture.description,
+        ok=ok,
+        is_finite=is_finite,
+        relative_error=rel_err,
+        computed_repr=repr([float(c) for c in computed]),
+    )
+
+
 def run_kernel(kernel: str, dtype: str) -> List[CaseResult]:
     """Run every fixture for `kernel` (both naive+stable variants) at one
     dtype, skipping fixtures not meaningful at that dtype (see
@@ -185,6 +219,8 @@ def run_kernel(kernel: str, dtype: str) -> List[CaseResult]:
                 results.append(_run_softmax(variant, fixture, dtype))
             elif kernel == "layer_norm":
                 results.append(_run_layer_norm(variant, fixture, dtype))
+            elif kernel == "rms_norm":
+                results.append(_run_rms_norm(variant, fixture, dtype))
             else:
                 results.append(_run_scalar(kernel, variant, fixture, dtype))
     return results

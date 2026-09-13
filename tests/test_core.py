@@ -140,3 +140,48 @@ def test_run_layer_norm_flags_out_of_tolerance_even_if_finite():
     assert result.is_finite is True
     assert result.ok is False
     assert result.relative_error is not None and result.relative_error > 0
+
+
+def test_run_rms_norm_marks_non_finite_output_as_not_ok():
+    """rms_norm goes through the array-valued _run_rms_norm path (like
+    layer_norm/softmax) -- confirm it correctly flags a collapsed-to-zero
+    naive result (finite but wrong, not NaN) as not-ok, distinct from
+    layer_norm's NaN failure shape."""
+    results = core.run_kernel("rms_norm", "float16")
+    naive_overflow = [
+        r for r in results
+        if r.variant == "naive" and r.fixture == "fp16_activation_overflow"
+    ]
+    assert len(naive_overflow) == 1
+    assert naive_overflow[0].is_finite is True
+    assert naive_overflow[0].ok is False
+
+    stable_overflow = [
+        r for r in results
+        if r.variant == "stable" and r.fixture == "fp16_activation_overflow"
+    ]
+    assert len(stable_overflow) == 1
+    assert stable_overflow[0].is_finite is True
+    assert stable_overflow[0].ok is True
+
+
+def test_run_rms_norm_flags_out_of_tolerance_even_if_finite():
+    """Mirrors test_run_layer_norm_flags_out_of_tolerance_even_if_finite
+    for the rms_norm array-valued path."""
+    from numguard.fixtures import Fixture
+
+    fixture = Fixture("wrong_but_finite", [1.0, 2.0, 3.0], "control case")
+
+    def wrong_rms_norm(values, dtype):
+        return [0.0, 0.0, 0.0]
+
+    original = core.kernels.KERNELS["rms_norm"]
+    core.kernels.KERNELS["rms_norm"] = (wrong_rms_norm, wrong_rms_norm)
+    try:
+        result = core._run_rms_norm("naive", fixture, "float32")
+    finally:
+        core.kernels.KERNELS["rms_norm"] = original
+
+    assert result.is_finite is True
+    assert result.ok is False
+    assert result.relative_error is not None and result.relative_error > 0
