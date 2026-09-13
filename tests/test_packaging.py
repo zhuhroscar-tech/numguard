@@ -63,3 +63,54 @@ def test_init_version_matches_pyproject_version():
         "src/numguard/__init__.py __version__ and pyproject.toml "
         "[project].version have drifted apart"
     )
+
+
+def test_numerical_stability_doc_exists_and_covers_every_kernel():
+    """kernels.py's own module docstring tells readers: 'see
+    docs/numerical-stability.md for the derivation of each' -- that file
+    did not exist anywhere in this repo's history until this test and
+    the doc it guards were added together. This is the same
+    documented-but-missing class of bug as the --help/docstring/
+    pyproject drift above, just one level up: a citation to a file
+    instead of a citation to a kernel name. This test fails loudly if
+    the file is ever deleted, or if a kernel is added without an
+    accompanying '## <Kernel Name>' section explaining its naive/stable
+    derivation."""
+    doc_path = _REPO_ROOT / "docs" / "numerical-stability.md"
+    assert doc_path.is_file(), (
+        "src/numguard/kernels.py's module docstring cites "
+        "docs/numerical-stability.md as the derivation reference, but "
+        "that file does not exist"
+    )
+    text = doc_path.read_text()
+    # Each kernel needs its own explanatory section; check by the
+    # underlying dispatch-table key names as well as their prose forms,
+    # since the doc's section headers use human-readable names
+    # (e.g. "## log-sum-exp", "## LayerNorm") rather than the raw
+    # identifiers ("logsumexp", "layer_norm").
+    section_aliases = {
+        "logsumexp": "log-sum-exp",
+        "softmax": "softmax",
+        "cross_entropy": "cross-entropy",
+        "variance": "variance",
+        "layer_norm": "LayerNorm",
+        "rms_norm": "RMSNorm",
+    }
+    for kernel in core.ALL_KERNELS:
+        assert kernel in section_aliases, (
+            f"kernel {kernel!r} has no known doc-section alias mapping in "
+            f"this test -- add one when adding a kernel, then add a "
+            f"matching '## ...' section to docs/numerical-stability.md"
+        )
+        alias = section_aliases[kernel]
+        assert re.search(rf"^##\s+.*{re.escape(alias)}", text, re.MULTILINE), (
+            f"docs/numerical-stability.md is missing a '## {alias}' "
+            f"section for kernel {kernel!r}"
+        )
+    # And the reverse: the doc shouldn't silently list a stale kernel
+    # that no longer exists in core.ALL_KERNELS (or the alias map above
+    # would need updating too).
+    assert len(section_aliases) == len(core.ALL_KERNELS), (
+        "section_aliases in this test has drifted from core.ALL_KERNELS "
+        "-- update both together when a kernel is added or removed"
+    )
