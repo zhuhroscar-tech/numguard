@@ -10,6 +10,28 @@ import pytest
 from numguard import cli
 
 
+def test_help_description_lists_every_kernel():
+    """Regression guard: the --help description text is hand-written
+    prose, not generated from core.ALL_KERNELS, so it drifted out of
+    sync when layer_norm/rms_norm were added (description still said
+    only 'softmax, log-sum-exp, cross-entropy, variance'). Assert every
+    real kernel name appears in the parser description so this can't
+    silently drift again when a 7th kernel is added."""
+    from numguard import core
+
+    parser = cli._build_parser()
+    description = parser.description
+    # logsumexp is written in prose as "log-sum-exp"; every other kernel
+    # name matches its identifier literally.
+    prose_name = {"logsumexp": "log-sum-exp", "cross_entropy": "cross-entropy"}
+    for kernel in core.ALL_KERNELS:
+        expected = prose_name.get(kernel, kernel)
+        assert expected in description, (
+            f"kernel {kernel!r} (expected {expected!r}) missing from "
+            f"--help description text"
+        )
+
+
 def test_check_naive_fails_passes_on_current_fixtures(capsys):
     """This is the load-bearing regression test: it proves the fixture
     set genuinely demonstrates the naive/stable gap right now, not just

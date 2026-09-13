@@ -26,9 +26,9 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="numguard",
         description=(
             "Compare naive vs numerically-stable ML math kernels "
-            "(softmax, log-sum-exp, cross-entropy, variance) against an "
-            "independent high-precision reference, across float16/"
-            "float32/float64, on adversarial fixtures."
+            "(softmax, log-sum-exp, cross-entropy, variance, layer_norm, "
+            "rms_norm) against an independent high-precision reference, "
+            "across float16/float32/float64, on adversarial fixtures."
         ),
     )
     p.add_argument("--version", action="version", version=f"numguard {__version__}")
