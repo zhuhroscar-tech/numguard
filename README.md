@@ -174,9 +174,22 @@ and regression-tested anywhere numpy runs, on macOS or Linux, CPU-only.
 
 ## Install
 
+**Not published to PyPI, and the name `numguard` is already taken on PyPI by
+an unrelated project** (a different "agent verification" tool by a different
+author — confirmed via `pypi.org/pypi/numguard/json`). This repo cannot use
+`pip install numguard` even after publishing; a rename or a different
+distribution name (e.g. `numguard-kernels`) would be needed first.
+
+Install the latest GitHub Release wheel directly (checksum-verified,
+CI-built):
+
 ```bash
-pip install numguard  # if/when published to PyPI
-# or from source:
+pip install https://github.com/zhuhroscar-tech/numguard/releases/latest/download/numguard-0.10.0-py3-none-any.whl
+```
+
+Or from source:
+
+```bash
 git clone https://github.com/zhuhroscar-tech/numguard.git
 cd numguard && pip install -e ".[dev]"
 ```
