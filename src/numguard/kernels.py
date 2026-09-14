@@ -682,6 +682,91 @@ def stable_focal_loss_grad(logit, target: int, gamma: float, alpha: float, dtype
     return float(result)
 
 
+# --- Pearson correlation coefficient -------------------------------------
+#
+# Real, actively-reported bug class, not a constructed one: the textbook
+# "sum of products" one-pass formula for Pearson's r,
+#   r = (n*sum(xy) - sum(x)*sum(y)) / sqrt((n*sum(x^2) - sum(x)^2) *
+#                                           (n*sum(y^2) - sum(y)^2))
+# computes the SAME catastrophic-cancellation shape as this repo's
+# existing `variance` kernel (E[x^2] - E[x]^2), but independently and
+# on two variables at once, and is what a huge fraction of from-scratch
+# / textbook / interview-style implementations actually write (see
+# st-hakky.hatenablog.com JA blog above using exactly this "scratch"
+# form, and countless "pearson correlation from scratch numpy" EN
+# tutorials/StackOverflow answers). Confirmed real-world failure shapes
+# from major libraries built around exactly this cancellation:
+#  - scipy.stats.pearsonr required THREE separate overflow/underflow
+#    rewrites (gh-8980 "overflows with high values of x and y", gh-9353
+#    "returns r=1 if r_num/r_den = inf" from tiny values, gh-3728
+#    constant-input NaN-vs-1.0 inconsistency) culminating in a full
+#    rewrite in PR#9562 that switched to a normalize-then-dot form
+#    specifically to avoid materializing sum-of-squares before dividing.
+#  - numpy/numpy#32446 (filed 2026, open) and pandas-dev/pandas#67023 /
+#    #37448 / #45640: mean-centered corrcoef/corr can still return
+#    exactly +1/-1/NaN inconsistently for exactly-constant columns
+#    purely from float mean-reduction residue, not a defined
+#    correlation at all.
+# This kernel's "naive" variant reproduces the pre-PR#9562 one-pass
+# formula (the actual documented failure mode); "stable" reproduces the
+# post-rewrite normalize-then-dot approach (divide each centered vector
+# by its own norm before the dot product, so no cross term ever grows
+# past O(1) regardless of input scale) plus an explicit zero-variance
+# guard returning NaN (matching scipy's current PearsonRConstantInput
+# convention and gh-32446/gh-67023's "correct" answer) instead of an
+# arbitrary clipped +-1.
+
+
+def naive_pearson_correlation(x_values, y_values, dtype: str) -> float:
+    """(n*sum(xy) - sum(x)*sum(y)) / sqrt((n*sum(x^2)-sum(x)^2) *
+    (n*sum(y^2)-sum(y)^2)) -- the literal "sum of products" formula for
+    Pearson's r, taught in many textbooks/tutorials and the exact shape
+    scipy.stats.pearsonr used before PR#9562. Squares and cross-products
+    of the raw (uncentered) values can overflow or lose all precision
+    to cancellation long before the mean-centered form would, for
+    ordinary data offset far from zero (sensor timestamps, prices,
+    large IDs)."""
+    x = _arr(x_values, dtype)
+    y = _arr(y_values, dtype)
+    dt = DTYPES[dtype]
+    n = dt(len(x))
+    with np.errstate(over="ignore", invalid="ignore"):
+        sx = np.sum(x)
+        sy = np.sum(y)
+        sxy = np.sum(x * y)
+        sxx = np.sum(x * x)
+        syy = np.sum(y * y)
+        num = n * sxy - sx * sy
+        den = np.sqrt((n * sxx - sx * sx) * (n * syy - sy * sy))
+        return float(num / den)
+
+
+def stable_pearson_correlation(x_values, y_values, dtype: str) -> float:
+    """Mean-center both vectors, then normalize each by its own norm
+    BEFORE the dot product (scipy PR#9562's fix), so no intermediate
+    term ever exceeds O(1) regardless of the input's absolute scale --
+    the same rescale-before-combine principle already used by this
+    repo's `stable_rms_norm`/`stable_online_softmax` kernels. An exact
+    zero-variance input (either vector exactly constant) is undefined
+    for Pearson's r and returns NaN explicitly, matching scipy's
+    PearsonRConstantInputWarning convention, rather than letting a
+    0/0 division fall through to an arbitrary implementation-dependent
+    value (the numpy#32446 / pandas#67023 / pandas#37448 failure this
+    kernel's fixtures reproduce)."""
+    x = _arr(x_values, dtype)
+    y = _arr(y_values, dtype)
+    dt = DTYPES[dtype]
+    with np.errstate(over="ignore", invalid="ignore"):
+        xm = (x - np.mean(x)).astype(dt)
+        ym = (y - np.mean(y)).astype(dt)
+        norm_x = np.sqrt(np.sum(xm * xm))
+        norm_y = np.sqrt(np.sum(ym * ym))
+        if norm_x == 0 or norm_y == 0:
+            return float("nan")
+        r = float(np.sum((xm / norm_x) * (ym / norm_y)))
+    return max(min(r, 1.0), -1.0)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -697,4 +782,5 @@ KERNELS = {
     "int8_add": (naive_int8_add, stable_int8_add),
     "hll_register": (naive_hll_register_term, stable_hll_register_term),
     "focal_loss_grad": (naive_focal_loss_grad, stable_focal_loss_grad),
+    "pearson_correlation": (naive_pearson_correlation, stable_pearson_correlation),
 }

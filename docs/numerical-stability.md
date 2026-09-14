@@ -526,6 +526,67 @@ recommendation, `gamma >= 1`): here `(1-p_t)**(gamma-1) = (1-p_t)**1`
 is a non-negative power, so the naive formula is actually fine --
 confirming the bug is specific to `gamma < 1`, not to saturation alone.
 
+## Pearson correlation coefficient
+
+**Textbook definition:** Pearson's r measures the linear correlation
+between two variables, `r = cov(x, y) / (std(x) * std(y))`, ranging
+from -1 (perfect negative) to +1 (perfect positive), undefined (0/0)
+when either variable has zero variance.
+
+**Naive formula** (`naive_pearson_correlation`): the "sum of products"
+one-pass formula taught in many textbooks and used by countless
+from-scratch implementations,
+`r = (n*sum(xy) - sum(x)*sum(y)) / sqrt((n*sum(x^2)-sum(x)^2) *
+(n*sum(y^2)-sum(y)^2))`. This computes the same catastrophic-
+cancellation shape as this repo's `variance` kernel's `E[x^2]-E[x]^2`,
+independently on two variables at once: `n*sum(xy)` and `sum(x)*sum(y)`
+both grow with the absolute scale of the data (not just its spread),
+so an ordinary offset (timestamps, prices, large IDs) makes their
+difference lose precision to cancellation, or the intermediate squares
+overflow outright, long before the true correlation's magnitude would
+suggest any instability.
+
+This is a real, actively-reported bug class, not a constructed one.
+`scipy.stats.pearsonr` needed three separate bug reports before a full
+rewrite fixed it:
+- `scipy/scipy#8980` ("pearsonr overflows with high values of x and
+  y") -- squaring large offset values before combining overflowed to
+  `inf`/`NaN` even for perfectly ordinary, well-correlated data.
+- `scipy/scipy#9353` ("pearsonr returns r=1 if r_num/r_den = inf") --
+  the opposite failure, tiny values underflowing the denominator to
+  exactly `0.0`, producing a spurious `r=1` via `inf` incorrectly
+  clamped by a "just in case" `min(max(r,-1),1)` guard.
+- `scipy/scipy#3728` -- inconsistent `NaN` vs `+-1` for exactly
+  constant input, depending on incidental floating-point residue.
+- `scipy/scipy#9562` (the fix) rewrote the whole calculation to
+  normalize each mean-centered vector by its own norm *before* the dot
+  product, specifically to avoid ever materializing a sum-of-squares
+  term whose magnitude depends on the input's absolute scale.
+- `numpy/numpy#32446` (2026, open) and `pandas-dev/pandas#67023` /
+  `#37448` / `#45640`: even the *mean-centered* form (already one step
+  more stable than the naive one-pass formula) can still return
+  `+1`, `-1`, or `NaN` inconsistently for exactly-constant columns,
+  purely from float mean-reduction residue -- confirming that
+  guarding the zero-variance case explicitly (not just centering
+  first) is necessary for a correct implementation.
+- `st-hakky.hatenablog.com`'s Japanese "Pearson correlation from
+  scratch" tutorial (2018) uses exactly the mean-centered-but-
+  undivided-by-norm "scratch" form as its first, most basic example,
+  demonstrating this formula shape's wide real-world prevalence in
+  from-scratch/textbook/interview-style code outside scipy itself.
+
+**Stable formula** (`stable_pearson_correlation`): mean-centers both
+vectors, then divides each by its own norm *before* the dot product
+(the same fix as `scipy` PR#9562, and the same "normalize/rescale
+before combining" principle already used by this repo's
+`stable_rms_norm` and `stable_online_softmax` kernels) -- no
+intermediate term ever exceeds `O(1)` regardless of the input's
+absolute scale. An exactly-zero-variance input (either vector
+constant) returns `NaN` explicitly, matching `scipy`'s current
+`PearsonRConstantInputWarning` convention and the "correct" answer
+identified by `numpy#32446`/`pandas#67023`, rather than an arbitrary
+clipped `+-1`.
+
 ## Independent ground truth
 
 All thirteen derivations above are cross-checked in this repository
@@ -607,3 +668,12 @@ tests, not decorative claims.
   Machine Learning Research (OpenReview `eCYActnGbu`) -- independently
   derives and empirically demonstrates the same instability across the
   broader `0 <= gamma < 1` range in real CNN/ViT/U-Net training runs.
+- `scipy/scipy` issues #8980, #9353, #3728 and PR #9562 -- the
+  overflow, underflow, and constant-input bug reports that drove
+  `scipy.stats.pearsonr`'s rewrite to the normalize-then-dot form
+  `stable_pearson_correlation` reproduces.
+- `numpy/numpy#32446` and `pandas-dev/pandas#67023` / `#37448` /
+  `#45640` -- real, currently open/recently-fixed reports that even
+  the mean-centered (but not norm-divided) form of Pearson's r returns
+  inconsistent `NaN`/`+-1` for exactly-constant columns, motivating
+  this kernel's explicit zero-variance guard.

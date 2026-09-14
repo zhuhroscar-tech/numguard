@@ -814,6 +814,84 @@ FOCAL_LOSS_GRAD_FIXTURES = [
 ]
 
 
+PEARSON_CORRELATION_FIXTURES = [
+    Fixture(
+        "everyday_clean_correlation",
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        "Ordinary small values, no offset -- baseline agreement case "
+        "showing naive and stable agree closely when there is nothing "
+        "to cancel (true r ~= 0.85280).",
+        q_values=[2.0, 4.0, 5.0, 4.0, 6.0],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "modest_offset_float16",
+        [51.0, 52.0, 53.0, 54.0],
+        "float16's ~3-4 significant decimal digits mean even a modest "
+        "offset of 50 is enough for the naive one-pass sum-of-products "
+        "formula to lose the true correlation (r = -0.8 exactly, an "
+        "integer-ratio case) to cancellation/overflow in n*sum(xy) - "
+        "sum(x)*sum(y), while the normalize-then-dot stable form stays "
+        "close throughout.",
+        q_values=[54.0, 52.0, 53.0, 51.0],
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "large_offset_small_spread_float32",
+        [10_001.0, 10_002.0, 10_003.0, 10_004.0, 10_005.0],
+        "Classic catastrophic-cancellation shape for the one-pass "
+        "Pearson formula (same mechanism as this repo's `variance` "
+        "kernel, applied to two variables' cross term at once): true "
+        "correlation is exactly -0.9, all values exactly representable "
+        "in float32, but naive float32 accumulation of "
+        "n*sum(xy) and sum(x)*sum(y) both grow large enough relative "
+        "to their difference that the outer sqrt's argument goes "
+        "negative, producing NaN (verified directly in this repo's "
+        "test suite). This is the exact class of failure documented "
+        "in scipy.stats.pearsonr gh-8980/gh-9353 before PR#9562's "
+        "normalize-then-dot rewrite. float32-only: float16 overflows "
+        "this offset outright (unrelated failure mode) and float64's "
+        "~15-17 significant digits absorb it without meaningful "
+        "cancellation.",
+        q_values=[10_005.0, 10_003.0, 10_004.0, 10_002.0, 10_001.0],
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "very_large_offset_float32",
+        [1_000_001.0, 1_000_002.0, 1_000_003.0, 1_000_004.0, 1_000_005.0],
+        "Same integer spread (true correlation exactly -0.9) at a "
+        "much larger offset -- still exactly representable in "
+        "float32 (well under the 2^24 exact-integer limit), and the "
+        "naive one-pass formula's cancellation is identically total: "
+        "verified naive float32 reports NaN here just as at the "
+        "smaller offset above, confirming the failure persists (does "
+        "not self-correct) as the offset grows further. float32-only "
+        "for the same reason as the fixture above.",
+        q_values=[1_000_005.0, 1_000_003.0, 1_000_004.0, 1_000_002.0, 1_000_001.0],
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "perfect_positive_correlation_control",
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        "y is an exact positive linear function of x (true r = "
+        "+1.0 exactly) -- an easy control with no offset and no "
+        "cancellation, included to confirm neither formula's guard "
+        "logic corrupts the ordinary/well-conditioned case. "
+        "float16-excluded: y's own magnitude (up to 50) makes the "
+        "naive formula's squared cross-denominator term "
+        "(n*sxx-sx^2)*(n*syy-sy^2) itself exceed float16's ~65504 "
+        "range even with zero cancellation error -- an unrelated "
+        "range limitation, not a formula defect, so not a fair "
+        "naive-vs-stable comparison at that dtype (the same "
+        "exclusion rationale already used by this repo's `variance` "
+        "kernel's offset fixtures).",
+        q_values=[10.0, 20.0, 30.0, 40.0, 50.0],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=True,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -829,6 +907,7 @@ FIXTURES_BY_KERNEL = {
     "int8_add": INT8_ADD_FIXTURES,
     "hll_register": HLL_REGISTER_FIXTURES,
     "focal_loss_grad": FOCAL_LOSS_GRAD_FIXTURES,
+    "pearson_correlation": PEARSON_CORRELATION_FIXTURES,
 }
 
 

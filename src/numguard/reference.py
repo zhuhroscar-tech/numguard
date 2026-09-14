@@ -131,6 +131,34 @@ def gold_sum(values: Sequence[float]) -> Decimal:
     return total
 
 
+def gold_pearson_correlation(x_values: Sequence[float], y_values: Sequence[float]) -> Decimal:
+    """Pearson's r = sum((x-mean_x)*(y-mean_y)) / sqrt(sum((x-mean_x)^2) *
+    sum((y-mean_y)^2)), from the textbook definition, at 50-digit
+    precision. Exactly-zero variance in either input is mathematically
+    undefined (not a limit of finite values, an outright 0/0), matching
+    scipy.stats.pearsonr's PearsonRConstantInputWarning convention of
+    returning NaN rather than an implementation-dependent +-1."""
+    ctx = _ctx()
+    xs = _to_decimals(x_values)
+    ys = _to_decimals(y_values)
+    n = ctx.create_decimal(len(xs))
+    mx = ctx.divide(sum(xs, ctx.create_decimal(0)), n)
+    my = ctx.divide(sum(ys, ctx.create_decimal(0)), n)
+    num = ctx.create_decimal(0)
+    denx = ctx.create_decimal(0)
+    deny = ctx.create_decimal(0)
+    for x, y in zip(xs, ys):
+        dx = ctx.subtract(x, mx)
+        dy = ctx.subtract(y, my)
+        num = ctx.add(num, ctx.multiply(dx, dy))
+        denx = ctx.add(denx, ctx.multiply(dx, dx))
+        deny = ctx.add(deny, ctx.multiply(dy, dy))
+    if denx == 0 or deny == 0:
+        return Decimal("NaN")
+    den = ctx.sqrt(ctx.multiply(denx, deny))
+    return ctx.divide(num, den)
+
+
 def gold_layer_norm(values: Sequence[float], eps: Decimal) -> list:
     """(x - mean) / sqrt(variance + eps), from the textbook definition at
     50-digit precision -- variance here is always the mean-centered

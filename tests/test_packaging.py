@@ -103,6 +103,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "int8_add": "int8 element-wise add",
         "hll_register": "HyperLogLog register term",
         "focal_loss_grad": "Sigmoid focal loss gradient",
+        "pearson_correlation": "Pearson correlation coefficient",
     }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

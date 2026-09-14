@@ -671,3 +671,68 @@ class TestFocalLossGradSaturatedZeroPower:
         stable = kernels.stable_focal_loss_grad(18.0, 1, 2.0, 0.25, "float32")
         assert math.isfinite(naive)
         assert naive == pytest.approx(stable, abs=1e-6)
+
+
+class TestPearsonCorrelationCancellation:
+    """Pearson's r via the textbook one-pass "sum of products" formula
+    hits the same catastrophic-cancellation shape as this repo's
+    `variance` kernel (E[x^2]-E[x]^2), but on two variables' cross term
+    at once -- the exact failure class scipy.stats.pearsonr needed
+    three separate bug reports (gh-8980, gh-9353, gh-3728) and a full
+    rewrite (PR#9562) to fix."""
+
+    def test_naive_fails_stable_survives_large_offset_float32(self):
+        x = [10_001.0, 10_002.0, 10_003.0, 10_004.0, 10_005.0]
+        y = [10_005.0, 10_003.0, 10_004.0, 10_002.0, 10_001.0]
+        naive = kernels.naive_pearson_correlation(x, y, "float32")
+        stable = kernels.stable_pearson_correlation(x, y, "float32")
+        assert math.isnan(naive)
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(-0.9, abs=1e-3)
+
+    def test_naive_fails_worse_at_larger_offset_float32(self):
+        x = [1_000_001.0, 1_000_002.0, 1_000_003.0, 1_000_004.0, 1_000_005.0]
+        y = [1_000_005.0, 1_000_003.0, 1_000_004.0, 1_000_002.0, 1_000_001.0]
+        naive = kernels.naive_pearson_correlation(x, y, "float32")
+        stable = kernels.stable_pearson_correlation(x, y, "float32")
+        assert math.isnan(naive)
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(-0.9, abs=1e-2)
+
+    def test_naive_fails_stable_survives_modest_offset_float16(self):
+        x = [51.0, 52.0, 53.0, 54.0]
+        y = [54.0, 52.0, 53.0, 51.0]
+        naive = kernels.naive_pearson_correlation(x, y, "float16")
+        stable = kernels.stable_pearson_correlation(x, y, "float16")
+        assert math.isnan(naive)
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(-0.8, abs=1e-2)
+
+    def test_both_agree_on_clean_no_offset_input(self):
+        # Zero-free, no-offset control: both formulas should agree
+        # closely -- the bug is conditional on offset/scale, not the
+        # correlation formula being wrong in general.
+        x = [1.0, 2.0, 3.0, 4.0, 5.0]
+        y = [2.0, 4.0, 5.0, 4.0, 6.0]
+        naive = kernels.naive_pearson_correlation(x, y, "float64")
+        stable = kernels.stable_pearson_correlation(x, y, "float64")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(stable, rel=1e-9)
+        assert stable == pytest.approx(0.852803, rel=1e-5)
+
+    def test_stable_returns_nan_for_exactly_constant_input(self):
+        # Pearson's r is mathematically undefined when either vector
+        # has zero variance -- this must return NaN explicitly
+        # (scipy's PearsonRConstantInputWarning convention), not an
+        # arbitrary implementation-dependent +-1/0 (the real
+        # numpy#32446 / pandas#67023 / pandas#37448 failure shape).
+        x = [7.0] * 5
+        y = [1.0, 2.0, 3.0, 4.0, 5.0]
+        stable = kernels.stable_pearson_correlation(x, y, "float64")
+        assert math.isnan(stable)
+
+    def test_perfect_correlation_is_exactly_one(self):
+        x = [1.0, 2.0, 3.0, 4.0, 5.0]
+        y = [10.0, 20.0, 30.0, 40.0, 50.0]
+        stable = kernels.stable_pearson_correlation(x, y, "float64")
+        assert stable == pytest.approx(1.0, abs=1e-9)
