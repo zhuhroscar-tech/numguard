@@ -458,3 +458,70 @@ class TestSumAccumulatedRoundingError:
             naive = kernels.naive_sum(values, "float32")
             stable = kernels.stable_sum(values, "float32")
             assert abs(stable - true_sum) <= abs(naive - true_sum) + 1e-9
+
+
+class TestRopeCosPositionAliasing:
+    """Regression tests pinning the RoPE position-aliasing bug: when a
+    rotary-embedding implementation commits position ids (and the
+    per-dimension inv_freq) to a low-precision dtype *before* computing
+    position*freq and its cos(), distinct nearby positions can round to
+    the identical low-precision angle -- the same real-world bug
+    documented for bfloat16 by Baichuan Inc.
+    (zhuanlan.zhihu.com/p/651588659) and independently fixed in
+    HuggingFace transformers (PR #29285, "Force float32 ... since
+    bfloat16 loses precision on long contexts"), reproduced here at
+    float16 (a precision this pure-numpy tool can exercise directly)."""
+
+    def test_naive_collides_distinct_positions_stable_does_not(self):
+        # Four distinct integer positions beyond float16's exact-integer
+        # range (2048): naive (compute in float16 throughout) must
+        # collapse at least two of them onto the identical angle, while
+        # stable (compute in float32, cast only the final cos() down)
+        # must keep them distinguishable.
+        positions = [16384.0, 16385.0, 16392.0, 16399.0]
+        freq = 0.1
+        naive = kernels.naive_rope_cos(positions, freq, "float16")
+        stable = kernels.stable_rope_cos(positions, freq, "float16")
+        # naive: positions 16384, 16385, 16392 collide onto one angle
+        assert naive[0] == naive[1] == naive[2]
+        # stable: no such collision -- every value should differ
+        stable_vals = [float(v) for v in stable]
+        assert len(set(stable_vals)) == len(stable_vals)
+
+    def test_naive_wrong_relative_to_true_cosine_stable_is_right(self):
+        import math as _math
+
+        positions = [16384.0, 16385.0, 16392.0, 16399.0]
+        freq = 0.1
+        naive = kernels.naive_rope_cos(positions, freq, "float16")
+        stable = kernels.stable_rope_cos(positions, freq, "float16")
+        true_vals = [_math.cos(p * freq) for p in positions]
+        # naive should be far off on at least one of the colliding
+        # positions (position 16384 has true cos ~0.059 but the naive
+        # angle collision reports a very different value)
+        naive_errs = [abs(float(n) - t) for n, t in zip(naive, true_vals)]
+        stable_errs = [abs(float(s) - t) for s, t in zip(stable, true_vals)]
+        assert max(naive_errs) > 0.1
+        assert max(stable_errs) < 0.01
+
+    def test_naive_and_stable_agree_on_short_context(self):
+        # Control: ordinary short-sequence position ids should not
+        # trigger any collision -- the bug is about scale, not the
+        # formula being wrong in general.
+        positions = [0.0, 1.0, 2.0, 3.0]
+        freq = 0.3
+        naive = kernels.naive_rope_cos(positions, freq, "float32")
+        stable = kernels.stable_rope_cos(positions, freq, "float32")
+        for n, s in zip(naive, stable):
+            assert float(n) == pytest.approx(float(s), abs=1e-5)
+
+    def test_stable_never_worse_than_naive_at_long_context(self):
+        import math as _math
+
+        positions = [16384.0, 16385.0, 16392.0, 16399.0]
+        freq = 0.1
+        naive = kernels.naive_rope_cos(positions, freq, "float16")
+        stable = kernels.stable_rope_cos(positions, freq, "float16")
+        true_vals = [_math.cos(p * freq) for p in positions]
+        for n, s, t in zip(naive, stable, true_vals):
+            assert abs(float(s) - t) <= abs(float(n) - t) + 1e-9

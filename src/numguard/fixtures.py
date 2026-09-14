@@ -25,6 +25,11 @@ class Fixture:
     # padding token or a position outside a causal/cross-attention
     # span). None for every other kernel.
     mask: Optional[Sequence[bool]] = None
+    # Rotation frequency (inv_freq), used only by rope_cos fixtures --
+    # the per-dimension-pair angular speed a real RoPE implementation
+    # would derive from base**(-2i/d). None (unused) for every other
+    # kernel; rope_cos fixtures always set it explicitly.
+    freq: Optional[float] = None
     # Which dtypes this fixture is meaningful for. Some adversarial cases
     # only demonstrate their failure mode at a particular precision (e.g.
     # an offset that overflows float16 outright isn't a fair "naive vs
@@ -503,6 +508,55 @@ SUM_FIXTURES = [
     ),
 ]
 
+
+ROPE_COS_FIXTURES = [
+    Fixture(
+        "everyday_short_context",
+        [0.0, 1.0, 2.0, 3.0],
+        "Ordinary short-sequence position ids with a typical rotary "
+        "frequency -- naive (cast-before-multiply) and stable "
+        "(float32-compute) formulations agree closely at every dtype; "
+        "control showing the bug is about scale, not the formula being "
+        "wrong in general (matches HuggingFace transformers' own "
+        "'Force float32' RoPE comment, PR #29285: ordinary short "
+        "contexts were never the problem).",
+        freq=0.3,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "fp16_long_context_position_aliasing",
+        [16384.0, 16385.0, 16392.0, 16399.0],
+        "Position ids in the range where float16 can no longer "
+        "represent every integer exactly (float16 loses integer "
+        "resolution above 2048) -- computing position*freq and its "
+        "cos() entirely in float16 collapses several distinct nearby "
+        "positions onto the same rounded angle (here 16384-16392 all "
+        "round to the same float16 product), producing a materially "
+        "wrong cosine for 3 of 4 positions. This is the float16 analog "
+        "of the documented bfloat16 RoPE position-collision bug "
+        "(Baichuan Inc., zhuanlan.zhihu.com/p/651588659; HuggingFace "
+        "transformers PR #29285) -- reproduced here at a precision "
+        "this tool can audit without a torch/bfloat16 dependency, "
+        "since bfloat16 and float16 both have too few mantissa bits to "
+        "hold large integer position ids exactly once they exceed the "
+        "dtype's specific integer-exact range.",
+        freq=0.1,
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "everyday_medium_context",
+        [100.0, 250.0, 500.0, 999.0],
+        "Medium-length-sequence position ids, well within every "
+        "dtype's exact-integer range -- both formulations should agree "
+        "closely; a second control spanning a more realistic "
+        "mid-length-sequence magnitude than the all-small-integer "
+        "control above.",
+        freq=0.05,
+        expect_naive_ok=True,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -514,6 +568,7 @@ FIXTURES_BY_KERNEL = {
     "online_softmax": ONLINE_SOFTMAX_FIXTURES,
     "masked_softmax": MASKED_SOFTMAX_FIXTURES,
     "sum": SUM_FIXTURES,
+    "rope_cos": ROPE_COS_FIXTURES,
 }
 
 

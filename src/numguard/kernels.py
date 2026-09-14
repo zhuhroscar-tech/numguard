@@ -377,6 +377,57 @@ def stable_masked_softmax(values, mask, dtype):
 # micro-batches, or numpy's own np.sum switching to pairwise summation
 # specifically to avoid this (numpy docs: "directly adding each number
 # individually to the result causing rounding errors in every step").
+# --- RoPE (rotary position embedding) angle/cos -------------------------
+#
+# Real-world bug, not a constructed one: production RoPE implementations
+# compute a per-position rotation angle as position_id * inv_freq and
+# then take cos()/sin() of that angle. If position_id and inv_freq are
+# committed to a low-precision dtype (float16, or bfloat16 in torch)
+# *before* the multiply, distinct integer positions can round to the
+# same low-precision value once they exceed that dtype's integer
+# resolution (float16 represents integers exactly only up to 2048; the
+# equivalent limit for bfloat16 is 256) -- so two different tokens get
+# an identical rotation angle ("position aliasing"), and the model
+# cannot tell them apart via RoPE alone. This is exactly the bug
+# documented in HuggingFace transformers PR #29285 ("Force float32
+# since bfloat16 loses precision on long contexts", now load-bearing
+# boilerplate in every RoPE implementation in that codebase) and
+# independently reported by Baichuan Inc. for both RoPE and ALiBi.  See
+# docs/numerical-stability.md for the citations. The mitigation is not
+# a new algorithm, just precision discipline: always compute the
+# position * inv_freq product (and the cos/sin of it) in at least
+# float32, and only cast the final result down to the model's storage
+# dtype -- never carry the position id itself in low precision.
+_ROPE_COMPUTE_DTYPE = {"float16": "float32", "float32": "float32", "float64": "float64"}
+
+
+def naive_rope_cos(values, freq, dtype):
+    """Bug pattern: position ids (and the frequency) are cast down to
+    the model's storage dtype *before* the angle is computed, so two
+    distinct positions can collide onto the same low-precision angle
+    well before the trig function is even applied."""
+    positions = _arr(values, dtype)
+    freq_val = _arr([freq], dtype)[0]
+    with np.errstate(over="ignore", invalid="ignore"):
+        angle = (positions * freq_val).astype(DTYPES[dtype])
+        return np.cos(angle).astype(DTYPES[dtype])
+
+
+def stable_rope_cos(values, freq, dtype):
+    """Fix pattern (matches HF transformers' 'Force float32' RoPE
+    boilerplate): always multiply positions by the frequency, and take
+    cos() of the result, in at least float32 -- regardless of the
+    model's storage dtype -- then cast only the final trig output down
+    to the requested dtype."""
+    compute_dtype = _ROPE_COMPUTE_DTYPE[dtype]
+    positions = _arr(values, compute_dtype)
+    freq_val = _arr([freq], compute_dtype)[0]
+    with np.errstate(over="ignore", invalid="ignore"):
+        angle = (positions * freq_val).astype(DTYPES[compute_dtype])
+        result = np.cos(angle)
+        return result.astype(DTYPES[dtype])
+
+
 def naive_sum(values, dtype) -> float:
     """Sequential (left-to-right) running-total summation -- the
     textbook `for x in xs: total += x` loop. Each addition rounds to
@@ -428,4 +479,5 @@ KERNELS = {
     "online_softmax": (naive_online_softmax, stable_online_softmax),
     "masked_softmax": (naive_masked_softmax, stable_masked_softmax),
     "sum": (naive_sum, stable_sum),
+    "rope_cos": (naive_rope_cos, stable_rope_cos),
 }

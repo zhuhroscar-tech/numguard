@@ -15,7 +15,7 @@ float32/float64 kernels.
 """
 from __future__ import annotations
 
-from decimal import Decimal, getcontext
+from decimal import Decimal, getcontext, ROUND_HALF_EVEN
 from typing import Sequence
 
 _PREC = 50
@@ -25,6 +25,40 @@ def _ctx():
     ctx = getcontext().copy()
     ctx.prec = _PREC
     return ctx
+
+
+def _decimal_cos(x: Decimal, ctx) -> Decimal:
+    """cos(x) via Taylor series after reducing x modulo 2*pi, computed
+    entirely in Decimal arithmetic at the reference context's precision.
+
+    Deliberately NOT built from math.cos (a float64 function) -- using a
+    float64 trig call as the "ground truth" for a tool whose whole job is
+    auditing float16/float32/float64 kernels would make the reference no
+    more precise than the float64 kernel under test at exactly the
+    dtype where the RoPE bug's residual error is smallest. This keeps
+    the same independence guarantee as every other gold_* function here:
+    a bug shared between the reference and the code under test cannot
+    hide behind comparing them to each other.
+    """
+    pi = ctx.create_decimal(
+        "3.14159265358979323846264338327950288419716939937510582097494"
+    )
+    two_pi = ctx.multiply(pi, ctx.create_decimal(2))
+    quotient = ctx.divide(x, two_pi)
+    k = quotient.to_integral_value(rounding=ROUND_HALF_EVEN, context=ctx)
+    reduced = ctx.subtract(x, ctx.multiply(k, two_pi))
+    x2 = ctx.multiply(reduced, reduced)
+    neg_x2 = ctx.minus(x2)
+    term = ctx.create_decimal(1)
+    total = ctx.create_decimal(1)
+    threshold = ctx.create_decimal(1).scaleb(-(_PREC + 5), ctx)
+    for i in range(1, 60):
+        denom = ctx.create_decimal((2 * i - 1) * (2 * i))
+        term = ctx.divide(ctx.multiply(term, neg_x2), denom)
+        total = ctx.add(total, term)
+        if abs(term) < threshold:
+            break
+    return total
 
 
 def _to_decimals(values: Sequence[float]) -> list:
@@ -164,6 +198,19 @@ def gold_online_softmax(values: Sequence[float]) -> list:
     error rather than an intentional difference in output.
     """
     return gold_softmax(values)
+
+
+def gold_rope_cos(positions: Sequence[float], freq: float) -> list:
+    """cos(position * freq) at 50-digit precision for every position, from
+    the textbook RoPE angle definition -- the naive/stable kernels under
+    test differ only in *what dtype the position*freq product and its
+    cos() are computed in*, never in the formula itself, so this
+    reference (built on the from-scratch Decimal `_decimal_cos` above,
+    not a float64 trig call) is the correct independent ground truth."""
+    ctx = _ctx()
+    freq_d = ctx.create_decimal(repr(float(freq)))
+    xs = _to_decimals(positions)
+    return [_decimal_cos(ctx.multiply(x, freq_d), ctx) for x in xs]
 
 
 def gold_masked_softmax(values: Sequence[float], mask: Sequence[bool]) -> list:

@@ -298,15 +298,58 @@ large term "swamps" the accumulator so later small increments are
 partially or fully lost (`large_value_swamps_small_terms`) -- two
 independent ways the same O(n) accumulation error manifests.
 
+## RoPE (rotary position embedding) angle/cos
+
+**Textbook definition:** RoPE assigns each token position `p` a
+rotation angle `theta = p * inv_freq` (per attention-head dimension
+pair, `inv_freq` derived from `base**(-2i/d)`), then rotates the query
+and key vectors by `cos(theta)`/`sin(theta)` -- the mechanism that lets
+attention scores depend only on relative position (Su et al., 2021,
+"RoFormer"). `rope_cos` audits just the `cos(position * freq)` step,
+the piece of the computation actually vulnerable to precision loss.
+
+**Naive formula** (`naive_rope_cos`): both the position id and
+`inv_freq` are cast to the model's storage dtype *before* the
+multiply, and the multiply and `cos()` are also computed in that
+dtype. This is not a range or cancellation bug -- it is a *resolution*
+bug: every floating-point dtype can only represent integers exactly up
+to a limit set by its mantissa width (256 for bfloat16's 7-bit
+mantissa, 2048 for float16's 10-bit mantissa, 2**24 for float32's
+23-bit mantissa). Beyond that limit, distinct integer positions
+literally round to the *same* stored value before the angle is even
+computed, so two different tokens receive an identical rotation angle
+("position aliasing") -- RoPE's entire ability to distinguish those
+positions is lost, silently, with no NaN/inf to signal it.
+
+**Stable formula** (`stable_rope_cos`): the position*freq product and
+its `cos()` are computed in at least float32 regardless of the model's
+storage dtype, and only the final trig output is cast down. This is
+the exact fix HuggingFace's `transformers` library applies in every
+RoPE implementation in that codebase (PR #29285: "Force float32 ...
+since bfloat16 loses precision on long contexts") -- not a new
+algorithm, just precision discipline about *where* the cast happens.
+
+This repo's fixtures reproduce the aliasing at float16 (position ids
+16384-16392, beyond float16's 2048 exact-integer limit collapse onto
+one angle) rather than bfloat16, since bfloat16 requires a torch
+dependency this pure-numpy tool deliberately avoids; float16 exhibits
+the identical resolution-limit mechanism the Baichuan Inc. report and
+HuggingFace's fix both document for bfloat16, just at a different
+(larger) position-id threshold.
+
 ## Independent ground truth
 
-All ten derivations above are cross-checked in this repository against
+All eleven derivations above are cross-checked in this repository against
 an independent implementation (`reference.py`) that uses Python's
 arbitrary-precision `decimal.Decimal` (50 significant digits) evaluated
 directly from the mathematical definitions -- not derived from the same
-numpy code paths being tested. This means a bug shared between the naive
-and stable numpy formulas (e.g. both computing the wrong quantity) would
-not be masked by comparing them only to each other. `numguard
+numpy code paths being tested (this includes `rope_cos`'s reference
+`cos()`, computed via a from-scratch Decimal Taylor series, deliberately
+not `math.cos`, so that a bug shared with a float64 trig implementation
+could not hide behind comparing against itself). This means a bug
+shared between the naive and stable numpy formulas (e.g. both computing
+the wrong quantity) would not be masked by comparing them only to
+each other. `numguard
 --check-naive-fails` (run in CI on every push) asserts that every naive
 fixture documented above still actually fails, and every stable
 counterpart still actually passes -- proving these are live regression
@@ -342,3 +385,16 @@ tests, not decorative claims.
   reduce this O(n) accumulated-rounding-error growth, independent
   corroboration that `sum`'s naive/stable gap is a real, previously-hit
   production issue rather than a contrived demonstration.
+- Su, J., Lu, Y., Pan, S., Murtadha, A., Wen, B., Liu, Y. (2021),
+  "RoFormer: Enhanced Transformer with Rotary Position Embedding"
+  (arXiv:2104.09864) -- introduces RoPE and the `cos(position * freq)`
+  rotation `rope_cos` audits.
+- Baichuan Inc., "混合精度下位置编码竟有大坑，LLaMA等主流开源模型纷纷中招"
+  (zhuanlan.zhihu.com/p/651588659) -- documents the RoPE/ALiBi
+  position-encoding collision bug under low-precision (bfloat16/float16)
+  position ids that `rope_cos`'s `fp16_long_context_position_aliasing`
+  fixture reproduces.
+- HuggingFace `transformers`, PR #29285 ("Force float32 ... since
+  bfloat16 loses precision on long contexts") -- the real-world fix
+  `stable_rope_cos` implements, now load-bearing boilerplate in every
+  RoPE implementation in that codebase.

@@ -99,6 +99,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "online_softmax": "Online (chunked/streaming) softmax",
         "masked_softmax": "Masked softmax",
         "sum": "Summation",
+        "rope_cos": "RoPE (rotary position embedding) angle/cos",
     }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

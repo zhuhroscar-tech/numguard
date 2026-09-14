@@ -93,6 +93,22 @@ and tells you exactly where and how the naive formula breaks.
   `sum`'s `many_small_uniform_terms` and
   `large_value_swamps_small_terms` fixtures; NumPy's own `np.sum`
   switched to pairwise summation for the same underlying reason).
+- **RoPE (rotary position embedding) has a resolution-limit failure,
+  not an overflow one**: the rotation angle `position * inv_freq` and
+  its `cos()` need enough mantissa bits to keep distinct integer
+  position ids distinguishable -- compute them in the model's storage
+  dtype (float16, or bfloat16 in torch) instead of at least float32,
+  and positions beyond that dtype's exact-integer range (2048 for
+  float16, 256 for bfloat16) silently collide onto the *same* rotation
+  angle, so the model loses its ability to tell those token positions
+  apart, with no NaN/inf to signal it. This is a real, previously
+  documented production bug (Baichuan Inc.'s report on RoPE/ALiBi under
+  bfloat16; HuggingFace `transformers` PR #29285, "Force float32...
+  since bfloat16 loses precision on long contexts", now load-bearing
+  boilerplate in every RoPE implementation in that codebase) --
+  reproduced here at float16 to keep this tool torch-free (verified in
+  this repo: `rope_cos`'s `fp16_long_context_position_aliasing`
+  fixture).
 
 These are not edge cases invented for this tool -- they are exactly the
 failure modes documented in the numerical-stability literature (Blanchard
@@ -104,9 +120,9 @@ a blog post or a framework-internal function you have to trust blindly.
 
 ## What this does
 
-For each of ten kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of eleven kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
-`masked_softmax`, `sum`), across three
+`masked_softmax`, `sum`, `rope_cos`), across three
 dtypes (`float16`, `float32`, `float64`), on a curated set of
 adversarial and everyday fixtures, numguard:
 
