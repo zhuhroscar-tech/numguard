@@ -100,6 +100,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "masked_softmax": "Masked softmax",
         "sum": "Summation",
         "rope_cos": "RoPE (rotary position embedding) angle/cos",
+        "int8_add": "int8 element-wise add",
     }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

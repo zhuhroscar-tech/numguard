@@ -337,9 +337,66 @@ the identical resolution-limit mechanism the Baichuan Inc. report and
 HuggingFace's fix both document for bfloat16, just at a different
 (larger) position-id threshold.
 
+## int8 element-wise add
+
+**Textbook definition:** affine ("zero-point") int8 quantization
+represents a real value as `real = (code - zero_point) * scale` --
+the definition shared by TFLite's own 8-bit quantization spec, ONNX's
+`QuantizeLinear`/`DequantizeLinear` operators, and OpenVINO's Low
+Precision Transformations (LPT). Adding two int8 tensors element-wise
+(the ordinary shape of a residual/skip connection) is only correct if
+each operand is dequantized with *its own* `(scale, zero_point)`
+before the sum, and the float result is then requantized -- with
+saturation -- into the output's own quant parameters. Unlike every
+other kernel in this repo, `int8_add`'s bug is not about float range
+or cancellation at all: it is about *quantization-parameter
+bookkeeping*, a categorically distinct failure family.
+
+This is a documented, recurring real-world bug class, not a
+constructed one:
+- OpenVINO PR #7305, "Fixed scale factors propagation for Eltwise with
+  very different inputs ranges" -- the exact mismatched-scale scenario
+  `mismatched_scale_residual_add` reproduces.
+- OpenVINO PR #1135, "[LPT] Eltwise Prod transformation fix", filed
+  against "Quantized model with per-channel quantization for
+  element-wise operations has zero accuracy".
+- OpenVINO issue #34673 (open, unfixed as of this writing): INT8
+  inference produces ~10% (random-guess) accuracy on Apple M4 Max ARM;
+  independent reproduction in the issue thread isolates the failure to
+  exactly the residual `Add` nodes, with the reporter's own analysis
+  pointing at "an int32 accumulator overflow, an incorrect broadcast
+  of the scale/zero-point vectors, or a broken ... instruction dispatch
+  ... for the addition of tensors with different scales" -- the same
+  requantization-bookkeeping failure family this kernel targets,
+  though not a bit-for-bit reproduction of that specific ARM kernel bug.
+- ONNX Runtime issue #25823: "Incorrect calculation of zero point for
+  uint8 symmetric quantized case" (zero_point computed as 127 instead
+  of 128) -- a distinct but adjacent zero-point-bookkeeping defect in
+  the same problem family.
+
+**Naive formula** (`naive_int8_add`): dequantizes *both* operands using
+operand A's `(scale, zero_point)` -- the bug pattern a fusion or
+kernel-selection path hits when it assumes (or caches) a single shared
+quantization descriptor for an Eltwise-Add instead of tracking each
+input's own parameters -- and then requantizes the sum into the
+output's int8 space *without* a saturating clamp, so an overflowing
+sum silently wraps modulo 256 (two's-complement wraparound) instead of
+saturating.
+
+**Stable formula** (`stable_int8_add`): dequantizes each operand with
+its own `(scale, zero_point)`, sums in float, and requantizes into the
+output's int8 space *with* a saturating clamp to `[-128, 127]` -- the
+standard, spec-correct affine-quantization add matching TFLite/ONNX/
+OpenVINO's documented per-tensor Eltwise-Add semantics.
+
+Unlike this repo's other kernels, `int8_add`'s fixtures are integer
+quantization codes rather than a dtype-swept float array, so it is
+scored at float64 only (there is no float16/float32/float64 variant of
+"which dtype is an int8 code stored in").
+
 ## Independent ground truth
 
-All eleven derivations above are cross-checked in this repository against
+All twelve derivations above are cross-checked in this repository against
 an independent implementation (`reference.py`) that uses Python's
 arbitrary-precision `decimal.Decimal` (50 significant digits) evaluated
 directly from the mathematical definitions -- not derived from the same

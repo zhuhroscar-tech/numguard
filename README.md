@@ -118,12 +118,31 @@ deep-learning frameworks). What was missing was a small, dependency-light
 CLI that demonstrates and regression-tests the gap directly, rather than
 a blog post or a framework-internal function you have to trust blindly.
 
+- **int8 element-wise add mismatches quantization parameters, not
+  float precision**: affine int8 quantization stores `real = (code -
+  zero_point) * scale`; adding two int8 tensors (an ordinary
+  residual/skip connection) is only correct if each operand is
+  dequantized with *its own* `(scale, zero_point)`, then the sum is
+  requantized with saturation. A naive fusion path that reuses one
+  operand's quant params for the other -- exactly the bug OpenVINO
+  PR #7305 fixed ("Eltwise with very different inputs ranges") and
+  PR #1135 documented as causing "zero accuracy" -- or that skips the
+  saturating clamp on requantization (the same failure family as the
+  open, unfixed bug openvino#34673 on Apple M4 Max ARM) produces a
+  systematically wrong result, not merely an imprecise one. This is a
+  different bug *class* from every kernel above: bookkeeping, not
+  float range/cancellation (verified in this repo: `int8_add`'s
+  `mismatched_scale_residual_add` and `int8_saturation_wraparound`
+  fixtures).
+
 ## What this does
 
-For each of eleven kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twelve kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
-`masked_softmax`, `sum`, `rope_cos`), across three
-dtypes (`float16`, `float32`, `float64`), on a curated set of
+`masked_softmax`, `sum`, `rope_cos`, `int8_add`), across three
+dtypes (`float16`, `float32`, `float64` -- `int8_add` is scored at
+`float64` only, since it audits integer quantization codes rather than
+a dtype-swept float array), on a curated set of
 adversarial and everyday fixtures, numguard:
 
 1. Runs the naive (textbook) formula and the stable (standard

@@ -40,6 +40,18 @@ class Fixture:
     # expected to also be correct (used by --check-naive-fails to know
     # which naive cases should pass vs which should demonstrate a bug).
     expect_naive_ok: bool = False
+    # Per-operand int8 quantization parameters, used only by int8_add
+    # fixtures (values/q_values hold the two operands' raw int8 codes;
+    # these six fields give each operand -- and the output, for the
+    # naive kernel's reused-params bug -- its own (scale, zero_point)).
+    # None for every other kernel. real_value = (code - zero_point) * scale,
+    # the standard affine quantization definition (TFLite/ONNX/OpenVINO).
+    zp_a: Optional[int] = None
+    scale_a: Optional[float] = None
+    zp_b: Optional[int] = None
+    scale_b: Optional[float] = None
+    zp_out: Optional[int] = None
+    scale_out: Optional[float] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -557,6 +569,65 @@ ROPE_COS_FIXTURES = [
 ]
 
 
+INT8_ADD_FIXTURES = [
+    Fixture(
+        "everyday_matching_scale",
+        [50.0],
+        "Both operands share the same (scale, zero_point) -- the common "
+        "case where a naive implementation that reuses operand A's "
+        "quant params for operand B happens to be harmless because "
+        "there is nothing to mismatch. Control case.",
+        q_values=[30.0],
+        zp_a=0, scale_a=0.1, zp_b=0, scale_b=0.1, zp_out=0, scale_out=0.1,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "asymmetric_zero_point_everyday",
+        [0.0],
+        "Both operands again share identical (scale, zero_point), this "
+        "time a nonzero zero-point -- confirms the control case isn't "
+        "an artifact of zero_point defaulting to 0. Control case.",
+        q_values=[5.0],
+        zp_a=-10, scale_a=0.2, zp_b=-10, scale_b=0.2, zp_out=-10, scale_out=0.2,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "mismatched_scale_residual_add",
+        [60.0],
+        "Operand A and operand B are quantized with different scales "
+        "(0.05 vs 1.0) -- e.g. a fine-grained residual branch added to "
+        "a coarse-grained branch, the exact 'Eltwise with very "
+        "different inputs ranges' scenario openvino PR#7305 fixed and "
+        "PR#1135 documented as causing 'zero accuracy'. A naive fusion "
+        "that dequantizes B using A's (scale, zero_point) instead of "
+        "its own produces a systematically wrong sum, not merely an "
+        "imprecise one (true sum 7.0, naive computes 3.2).",
+        q_values=[4.0],
+        zp_a=0, scale_a=0.05, zp_b=0, scale_b=1.0, zp_out=0, scale_out=0.1,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "int8_saturation_wraparound",
+        [100.0],
+        "Both operands share matching quant params (isolating this "
+        "fixture from the mismatched-scale bug above), but their sum "
+        "overflows the int8 requantization range: the correct answer "
+        "saturates at 127 (matching every real quant spec's clamp step, "
+        "and the same failure family as the open, unfixed bug "
+        "openvino#34673 -- INT8 residual Eltwise-Add producing "
+        "catastrophic error on Apple M4 Max ARM). A naive requantizer "
+        "that skips the saturating clip silently wraps modulo 256 "
+        "instead, producing a negative result (-56) for a large "
+        "positive sum.",
+        q_values=[100.0],
+        zp_a=0, scale_a=1.0, zp_b=0, scale_b=1.0, zp_out=0, scale_out=1.0,
+        dtypes=("float64",),
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -569,6 +640,7 @@ FIXTURES_BY_KERNEL = {
     "masked_softmax": MASKED_SOFTMAX_FIXTURES,
     "sum": SUM_FIXTURES,
     "rope_cos": ROPE_COS_FIXTURES,
+    "int8_add": INT8_ADD_FIXTURES,
 }
 
 

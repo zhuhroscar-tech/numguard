@@ -468,6 +468,66 @@ def stable_sum(values, dtype) -> float:
     return float(total)
 
 
+# --- int8 element-wise add (cross-scale/zero-point requantization) --------
+#
+# Real-world bug, not a constructed one: affine ("zero-point") int8
+# quantization represents a real value as (code - zero_point) * scale
+# (TFLite's own 8-bit quantization spec, ONNX QuantizeLinear/
+# DequantizeLinear, OpenVINO's LPT). When two int8 tensors with
+# *different* (scale, zero_point) pairs are added element-wise -- the
+# ordinary shape of a residual connection, where one branch has been
+# quantized more coarsely than the other -- each operand MUST be
+# dequantized with its OWN params before the add, then the float sum
+# requantized (with saturation) into the output's params. Getting this
+# wrong is a documented, recurring bug class across multiple real
+# toolkits: OpenVINO PR#7305 ("Fixed scale factors propagation for
+# Eltwise with very different inputs ranges"), OpenVINO PR#1135 (a
+# per-channel quant mismatch causing "zero accuracy"), an open/unfixed
+# bug openvino#34673 (INT8 residual Eltwise-Add producing catastrophic
+# ~10% accuracy on Apple M4 Max ARM, isolated by the reporter to
+# exactly the residual Add nodes), and onnxruntime#25823 (zero-point
+# miscalculated for uint8 symmetric quantization). This is categorically
+# distinct from every float-precision kernel above: the bug is in
+# *requantization bookkeeping* (wrong scale/zero-point applied, or a
+# missing saturating clamp), not in float range or cancellation.
+INT8_QMIN, INT8_QMAX = -128, 127
+
+
+def naive_int8_add(a_code, b_code, zp_a, scale_a, zp_b, scale_b, zp_out, scale_out):
+    """Dequantize BOTH operands using operand A's (scale, zero_point) --
+    the bug pattern real fusion/kernel-selection code hits when it
+    assumes (or caches) a single shared quant descriptor for an
+    Eltwise-Add instead of tracking each input's own params (the exact
+    OpenVINO PR#7305/PR#1135 failure class) -- then requantize the sum
+    into the output's int8 space WITHOUT a saturating clamp, so a sum
+    that overflows the representable range silently wraps modulo 256
+    instead of clamping (the same failure shape as openvino#34673's
+    catastrophic residual-Add error)."""
+    real_a = (a_code - zp_a) * scale_a
+    real_b_wrong = (b_code - zp_a) * scale_a  # bug: reuses A's params for B
+    real_sum = real_a + real_b_wrong
+    raw_code = round(real_sum / scale_out) + zp_out
+    # No saturating clamp: wrap into signed-int8 range via two's-complement
+    # modulo arithmetic, exactly what happens if the result is stored into
+    # an actual int8 buffer without a clip/saturate step.
+    wrapped = ((raw_code - INT8_QMIN) % 256) + INT8_QMIN
+    return float(wrapped)
+
+
+def stable_int8_add(a_code, b_code, zp_a, scale_a, zp_b, scale_b, zp_out, scale_out):
+    """Dequantize each operand with its OWN (scale, zero_point), sum in
+    float, then requantize into the output's int8 space WITH a
+    saturating clamp to [-128, 127] -- the standard, spec-correct
+    affine-quantization add (matches TFLite/ONNX/OpenVINO's documented
+    per-tensor Eltwise-Add semantics)."""
+    real_a = (a_code - zp_a) * scale_a
+    real_b = (b_code - zp_b) * scale_b
+    real_sum = real_a + real_b
+    raw_code = round(real_sum / scale_out) + zp_out
+    clamped = max(INT8_QMIN, min(INT8_QMAX, raw_code))
+    return float(clamped)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -480,4 +540,5 @@ KERNELS = {
     "masked_softmax": (naive_masked_softmax, stable_masked_softmax),
     "sum": (naive_sum, stable_sum),
     "rope_cos": (naive_rope_cos, stable_rope_cos),
+    "int8_add": (naive_int8_add, stable_int8_add),
 }

@@ -164,3 +164,33 @@ def test_gold_kl_divergence_never_negative():
     ):
         result = reference.gold_kl_divergence(p, q)
         assert result >= 0
+
+
+def test_gold_int8_add_matches_hand_computed_example():
+    # a_code=60 @ (scale=0.05, zp=0) -> real 3.0
+    # b_code=4  @ (scale=1.0,  zp=0) -> real 4.0
+    # sum = 7.0, requantized at scale_out=0.1, zp_out=0 -> code 70
+    result = reference.gold_int8_add(60.0, 4.0, 0, 0.05, 0, 1.0, 0, 0.1)
+    assert float(result) == pytest.approx(70.0)
+
+
+def test_gold_int8_add_saturates_rather_than_wraps():
+    # a_code=100, b_code=100, matching scale=1.0 zp=0: true sum is 200,
+    # far outside int8 range -- the reference must clamp to 127, not
+    # wrap (that wrapping behavior belongs only to the naive kernel
+    # under test, not to this independent oracle).
+    result = reference.gold_int8_add(100.0, 100.0, 0, 1.0, 0, 1.0, 0, 1.0)
+    assert float(result) == pytest.approx(127.0)
+
+
+def test_gold_int8_add_saturates_on_negative_overflow_too():
+    result = reference.gold_int8_add(-100.0, -100.0, 0, 1.0, 0, 1.0, 0, 1.0)
+    assert float(result) == pytest.approx(-128.0)
+
+
+def test_gold_int8_add_respects_nonzero_zero_points():
+    # a_code=-10 @ (scale=0.2, zp=-10) -> real 0.0
+    # b_code=5   @ (scale=0.2, zp=-10) -> real (5 - (-10)) * 0.2 = 3.0
+    # sum = 3.0, requantized at (scale=0.2, zp=-10) -> code 5
+    result = reference.gold_int8_add(-10.0, 5.0, -10, 0.2, -10, 0.2, -10, 0.2)
+    assert float(result) == pytest.approx(5.0)

@@ -242,3 +242,50 @@ def gold_masked_softmax(values: Sequence[float], mask: Sequence[bool]) -> list:
         else:
             result.append(ctx.create_decimal(0))
     return result
+
+
+def gold_int8_add(
+    a_code: float,
+    b_code: float,
+    zp_a: int,
+    scale_a: float,
+    zp_b: int,
+    scale_b: float,
+    zp_out: int,
+    scale_out: float,
+) -> Decimal:
+    """Spec-correct affine-quantized element-wise add, at 50-digit
+    Decimal precision: dequantize each operand with its OWN (scale,
+    zero_point) -- real = (code - zero_point) * scale, the textbook
+    affine/"zero-point" quantization definition shared by TFLite, ONNX
+    QuantizeLinear/DequantizeLinear, and OpenVINO's LPT -- sum the two
+    real values exactly, requantize into the output's int8 space, and
+    saturate (clamp) to the representable range [-128, 127] rather than
+    wrapping. This is deliberately independent of both kernel
+    implementations under test (naive_int8_add/stable_int8_add in
+    kernels.py): it is built directly from the quantization spec's
+    algebraic definition, not from re-running either candidate
+    implementation, so a bug shared between naive and stable could not
+    hide behind comparing them only to each other.
+    """
+    ctx = _ctx()
+    a = ctx.create_decimal(repr(float(a_code)))
+    b = ctx.create_decimal(repr(float(b_code)))
+    za = ctx.create_decimal(zp_a)
+    zb = ctx.create_decimal(zp_b)
+    zo = ctx.create_decimal(zp_out)
+    sa = ctx.create_decimal(repr(float(scale_a)))
+    sb = ctx.create_decimal(repr(float(scale_b)))
+    so = ctx.create_decimal(repr(float(scale_out)))
+    real_a = ctx.multiply(ctx.subtract(a, za), sa)
+    real_b = ctx.multiply(ctx.subtract(b, zb), sb)
+    real_sum = ctx.add(real_a, real_b)
+    raw_code = ctx.add(ctx.divide(real_sum, so), zo).to_integral_value(
+        rounding=ROUND_HALF_EVEN, context=ctx
+    )
+    qmin, qmax = ctx.create_decimal(-128), ctx.create_decimal(127)
+    if raw_code < qmin:
+        return qmin
+    if raw_code > qmax:
+        return qmax
+    return raw_code

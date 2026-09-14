@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -88,6 +88,21 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
     elif kernel == "sum":
         computed = fn(fixture.values, dtype)
         gold = reference.gold_sum(fixture.values)
+    elif kernel == "int8_add":
+        (a_code,) = fixture.values
+        (b_code,) = fixture.q_values
+        computed = fn(
+            a_code, b_code,
+            fixture.zp_a, fixture.scale_a,
+            fixture.zp_b, fixture.scale_b,
+            fixture.zp_out, fixture.scale_out,
+        )
+        gold = reference.gold_int8_add(
+            a_code, b_code,
+            fixture.zp_a, fixture.scale_a,
+            fixture.zp_b, fixture.scale_b,
+            fixture.zp_out, fixture.scale_out,
+        )
     else:
         raise ValueError(f"not a scalar kernel: {kernel}")
 

@@ -525,3 +525,40 @@ class TestRopeCosPositionAliasing:
         true_vals = [_math.cos(p * freq) for p in positions]
         for n, s, t in zip(naive, stable, true_vals):
             assert abs(float(s) - t) <= abs(float(n) - t) + 1e-9
+
+
+class TestInt8AddQuantMismatch:
+    """int8_add: regression tests pinning the two documented real-world
+    failure shapes (OpenVINO PR#7305/PR#1135 mismatched-scale Eltwise
+    fusion; openvino#34673-style saturation-wraparound) so a future
+    change that "fixes" the naive kernel or weakens a fixture value
+    would be caught here even if core.py's tolerance were loosened."""
+
+    def test_naive_reuses_operand_a_params_for_b(self):
+        # a_code=60 @ (scale=0.05, zp=0) -> real_a = 3.0
+        # b_code=4  @ (scale=1.0,  zp=0) -> real_b = 4.0 (true)
+        # naive wrongly dequantizes b with A's params: 4 * 0.05 = 0.2
+        # true sum = 7.0 -> requantized @ scale_out=0.1 -> code 70
+        # naive sum = 3.2 -> requantized @ scale_out=0.1 -> code 32
+        naive = kernels.naive_int8_add(60.0, 4.0, 0, 0.05, 0, 1.0, 0, 0.1)
+        stable = kernels.stable_int8_add(60.0, 4.0, 0, 0.05, 0, 1.0, 0, 0.1)
+        assert naive == pytest.approx(32.0)
+        assert stable == pytest.approx(70.0)
+        assert naive != stable
+
+    def test_naive_wraps_on_overflow_stable_saturates(self):
+        # a_code=100, b_code=100, matching (scale=1.0, zp=0): true sum
+        # is 200.0, requantized code 200 -- outside int8 range.
+        naive = kernels.naive_int8_add(100.0, 100.0, 0, 1.0, 0, 1.0, 0, 1.0)
+        stable = kernels.stable_int8_add(100.0, 100.0, 0, 1.0, 0, 1.0, 0, 1.0)
+        assert naive == pytest.approx(-56.0)  # wraps: 200 -> -56 mod 256
+        assert stable == pytest.approx(127.0)  # saturates at int8 max
+
+    def test_naive_and_stable_agree_when_params_match(self):
+        # Control: when both operands already share (scale, zero_point),
+        # reusing A's params for B is a no-op, so there is nothing to
+        # mismatch and naive/stable must agree exactly.
+        naive = kernels.naive_int8_add(50.0, 30.0, 0, 0.1, 0, 0.1, 0, 0.1)
+        stable = kernels.stable_int8_add(50.0, 30.0, 0, 0.1, 0, 0.1, 0, 0.1)
+        assert naive == pytest.approx(stable)
+        assert naive == pytest.approx(80.0)
