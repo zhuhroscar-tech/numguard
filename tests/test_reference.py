@@ -200,3 +200,50 @@ def test_gold_hll_register_term_matches_exact_power_of_two():
     for rank in (0, 1, 17, 31, 32, 35, 51):
         result = reference.gold_hll_register_term(rank)
         assert float(result) == pytest.approx(2.0 ** -rank, rel=1e-12)
+
+
+def test_gold_focal_loss_grad_matches_closed_form_derivative():
+    # Independent cross-check: this central-difference-on-Decimal
+    # reference should agree with the textbook closed-form
+    # d(FocalLoss)/dx derivation at ordinary (non-saturated) inputs
+    # across several gamma values, confirming the numerical derivative
+    # itself is accurate, not merely self-consistent.
+    import math as _math
+
+    def sigmoid(x):
+        return 1.0 / (1.0 + _math.exp(-x))
+
+    def closed_form(x, target, gamma, alpha):
+        p = sigmoid(x)
+        if target == 1:
+            one_minus_p = 1.0 - p
+            bracket = gamma * p * _math.log(p) - one_minus_p
+            return alpha * (one_minus_p ** gamma) * bracket
+        else:
+            bracket = p - gamma * (1.0 - p) * _math.log(1.0 - p)
+            return (1.0 - alpha) * (p ** gamma) * bracket
+
+    for gamma in (0.0, 0.5, 2.0, 3.0):
+        for x, target in ((0.0, 1), (1.0, 0), (-2.0, 1), (3.0, 0)):
+            gold = float(reference.gold_focal_loss_grad(x, target, gamma, 0.25))
+            expected = closed_form(x, target, gamma, 0.25)
+            assert gold == pytest.approx(expected, rel=1e-6), (
+                f"gamma={gamma} x={x} target={target}: gold={gold} expected={expected}"
+            )
+
+
+def test_gold_focal_loss_grad_zero_gamma_reduces_to_bce_gradient():
+    # gamma=0 is Focal Loss's own documented reduction to plain
+    # alpha-weighted binary cross-entropy, whose gradient has a simple
+    # known closed form: alpha_t * (p - target).
+    import math as _math
+
+    def sigmoid(x):
+        return 1.0 / (1.0 + _math.exp(-x))
+
+    for x, target, alpha in ((0.0, 1, 0.5), (1.5, 0, 0.25), (-1.5, 1, 0.75)):
+        gold = float(reference.gold_focal_loss_grad(x, target, 0.0, alpha))
+        p = sigmoid(x)
+        alpha_t = alpha if target == 1 else (1.0 - alpha)
+        expected = alpha_t * (p - target)
+        assert gold == pytest.approx(expected, rel=1e-6)

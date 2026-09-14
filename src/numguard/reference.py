@@ -301,3 +301,53 @@ def gold_hll_register_term(rank: int) -> Decimal:
     ctx = _ctx()
     two = ctx.create_decimal(2)
     return ctx.power(two, ctx.create_decimal(-rank))
+
+
+def gold_focal_loss_grad(logit: float, target: int, gamma: float, alpha: float) -> Decimal:
+    """d(FocalLoss)/d(logit) via a symmetric central-difference numerical
+    derivative of the focal loss ITSELF (not of either naive/stable
+    analytic gradient formula under test), all computed in 50-digit
+    Decimal arithmetic -- deliberately independent of both kernel
+    implementations' analytic differentiation, so a shared algebra
+    mistake in naive_focal_loss_grad/stable_focal_loss_grad could not
+    hide behind comparing them only to each other.
+
+    FocalLoss(x) = -alpha_t * (1 - p_t)**gamma * ln(p_t), where
+    p_t = sigmoid(x) if target==1 else 1 - sigmoid(x), and alpha_t is
+    alpha if target==1 else (1 - alpha) -- the textbook definition from
+    Lin et al. (arXiv:1708.02002), evaluated directly (no chain-rule
+    algebra applied by this reference at all). The step h=1e-20 is far
+    below Decimal's 50-digit precision floor for the magnitudes this
+    kernel's fixtures use, and well above the ~1e-50 rounding noise
+    floor, giving a numerical derivative accurate to effectively all
+    50 digits for smooth inputs (finite loss with p_t bounded away from
+    a hard 0/1 in exact Decimal arithmetic, which never underflows the
+    way float16/32/64 do -- that underflow is exactly the bug this
+    kernel exists to catch in the kernels under test, not in this
+    reference)."""
+    ctx = _ctx()
+
+    def sigmoid(x: Decimal) -> Decimal:
+        return ctx.divide(Decimal(1), ctx.add(Decimal(1), ctx.exp(ctx.minus(x))))
+
+    def focal_loss(x: Decimal) -> Decimal:
+        p = sigmoid(x)
+        if target == 1:
+            pt = p
+            alpha_t = ctx.create_decimal(repr(float(alpha)))
+        else:
+            pt = ctx.subtract(Decimal(1), p)
+            alpha_t = ctx.subtract(Decimal(1), ctx.create_decimal(repr(float(alpha))))
+        one_minus_pt = ctx.subtract(Decimal(1), pt)
+        gamma_d = ctx.create_decimal(repr(float(gamma)))
+        if one_minus_pt == 0:
+            modulator = Decimal(0) if gamma_d > 0 else Decimal(1)
+        else:
+            modulator = ctx.power(one_minus_pt, gamma_d)
+        return ctx.minus(ctx.multiply(alpha_t, ctx.multiply(modulator, ctx.ln(pt))))
+
+    x = ctx.create_decimal(repr(float(logit)))
+    h = ctx.create_decimal("1e-20")
+    f_plus = focal_loss(ctx.add(x, h))
+    f_minus = focal_loss(ctx.subtract(x, h))
+    return ctx.divide(ctx.subtract(f_plus, f_minus), ctx.multiply(Decimal(2), h))

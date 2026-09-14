@@ -611,3 +611,63 @@ class TestHLLRegisterShiftOverflow:
         stable = kernels.stable_hll_register_term(51)
         assert naive != pytest.approx(stable)
         assert stable == pytest.approx(2.0 ** -51)
+
+
+class TestFocalLossGradSaturatedZeroPower:
+    """focal_loss_grad: regression tests pinning the exact sam3#575
+    failure shape (an explicit (1-p_t)**(gamma-1) factor evaluating
+    0**-1 == inf, then 0*inf == NaN, at a saturated-and-correct
+    prediction with gamma <= 1) so a future change that 'fixes' the
+    naive kernel or weakens a fixture would be caught here even if
+    core.py's tolerance were loosened."""
+
+    def test_naive_and_stable_agree_on_unsaturated_gamma_two(self):
+        # Control: an ordinary unsaturated logit at the common gamma=2
+        # default -- no saturation, no negative power, both formulas
+        # should agree closely.
+        naive = kernels.naive_focal_loss_grad(0.0, 1, 2.0, 0.25, "float64")
+        stable = kernels.stable_focal_loss_grad(0.0, 1, 2.0, 0.25, "float64")
+        assert naive == pytest.approx(stable, rel=1e-9)
+
+    def test_naive_and_stable_agree_on_unsaturated_gamma_zero(self):
+        # Control: gamma=0 alone, without saturation, is not sufficient
+        # to trigger the bug -- isolates saturation as the second
+        # necessary precondition.
+        naive = kernels.naive_focal_loss_grad(0.0, 1, 0.0, 0.5, "float64")
+        stable = kernels.stable_focal_loss_grad(0.0, 1, 0.0, 0.5, "float64")
+        assert naive == pytest.approx(stable, rel=1e-9)
+        assert naive == pytest.approx(-0.25, rel=1e-6)
+
+    def test_naive_nans_on_saturated_correct_prediction_gamma_zero(self):
+        # The sam3#575 repro shape: a confidently-correct, saturated
+        # logit at gamma=0 -- naive's 0**-1 * 0 = NaN, but the true
+        # gradient here is an ordinary tiny finite number.
+        for dtype, logit in (("float16", 10.0), ("float32", 18.0), ("float64", 40.0)):
+            naive = kernels.naive_focal_loss_grad(logit, 1, 0.0, 0.5, dtype)
+            stable = kernels.stable_focal_loss_grad(logit, 1, 0.0, 0.5, dtype)
+            assert math.isnan(naive), f"expected naive NaN at dtype={dtype}"
+            assert math.isfinite(stable), f"expected stable finite at dtype={dtype}"
+
+    def test_naive_nans_on_saturated_wrong_direction_gamma_zero(self):
+        # The mirror case via the target=0 branch of the formula.
+        naive = kernels.naive_focal_loss_grad(-18.0, 0, 0.0, 0.5, "float32")
+        stable = kernels.stable_focal_loss_grad(-18.0, 0, 0.0, 0.5, "float32")
+        assert math.isnan(naive)
+        assert math.isfinite(stable)
+
+    def test_naive_nans_on_saturated_fractional_gamma(self):
+        # van Leeuwen et al. (TMLR 2025): the instability spans the
+        # whole 0 <= gamma < 1 range, not just exactly gamma=0.
+        naive = kernels.naive_focal_loss_grad(18.0, 1, 0.5, 0.25, "float32")
+        stable = kernels.stable_focal_loss_grad(18.0, 1, 0.5, 0.25, "float32")
+        assert math.isnan(naive)
+        assert math.isfinite(stable)
+
+    def test_naive_is_actually_fine_at_saturated_gamma_two_control(self):
+        # Control: the same saturated logit at gamma=2 (a non-negative
+        # exponent) -- naive is NOT buggy here, confirming the failure
+        # is specific to gamma < 1, not saturation alone.
+        naive = kernels.naive_focal_loss_grad(18.0, 1, 2.0, 0.25, "float32")
+        stable = kernels.stable_focal_loss_grad(18.0, 1, 2.0, 0.25, "float32")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(stable, abs=1e-6)

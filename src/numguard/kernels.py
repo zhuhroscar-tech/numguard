@@ -576,6 +576,112 @@ def stable_hll_register_term(rank: int) -> float:
     return 2.0 ** (-rank)
 
 
+# --- sigmoid focal loss gradient (binary classification) -----------------
+#
+# Real-world bug, not a constructed one: Lin et al.'s Focal Loss (arXiv:
+# 1708.02002) reshapes binary cross-entropy as
+#   FL(p_t) = -alpha_t * (1 - p_t)**gamma * log(p_t)
+# where p_t is the model's predicted probability of the TRUE class and
+# gamma is the "focusing" exponent that down-weights easy examples. This
+# kernel audits d(FL)/dx (x = the pre-sigmoid logit), the quantity that
+# actually drives training via backpropagation.
+#
+# The naive gradient is the literal, un-simplified product/chain rule
+# applied straight to the formula above:
+#   d(FL)/dx = -alpha_t * [ -gamma*(1-p_t)**(gamma-1)*dp_t/dx*log(p_t)
+#                           + (1-p_t)**gamma * (1/p_t) * dp_t/dx ]
+# This is mathematically correct wherever it is well-defined, but it
+# contains an explicit (1 - p_t)**(gamma - 1) factor. When gamma == 0
+# (a real, supported, non-exotic configuration -- gamma=0 is Focal
+# Loss's own documented reduction to plain alpha-weighted binary
+# cross-entropy) and the prediction has saturated in the correct
+# direction (an ordinary, even desirable, training outcome: p_t very
+# close to 1, e.g. a confidently-correct high-magnitude logit), then
+# `1 - p_t` underflows to exactly 0.0 in floating point, and
+# `0.0 ** (0 - 1) == 0.0 ** -1` is `inf` (a literal division by zero
+# inside the power). That `inf` is then multiplied by `dp_t/dx`, which
+# has ALSO underflowed to 0.0 at the same saturation point -- an
+# IEEE754 `0 * inf` indeterminate form that evaluates to `NaN` and
+# poisons the entire gradient, even though the true gradient at that
+# point is an ordinary, tiny, finite number (the network is simply
+# very confident and correct, exactly the case Focal Loss should
+# handle gracefully by driving the gradient toward zero, not NaN).
+#
+# This is documented and independently confirmed in at least three
+# distinct real codebases: facebookresearch/sam3#575 ("Reduced Triton
+# sigmoid focal loss returns NaN gradients for gamma=0 when logits
+# saturate" -- filed and fixed via PR#576, June 2026, root-caused to
+# exactly this `(1 - p_t) ** (gamma - 1)` term evaluating `0 ** -1`),
+# kornia/kornia#918/PR#924 ("NaN gradients on backward pass with focal
+# loss", fixed by adding an epsilon), and van Leeuwen et al., "A Note
+# on the Stability of the Focal Loss" (TMLR 2025, arXiv/OpenReview
+# eCYActnGbu), which independently derives and empirically demonstrates
+# the identical failure for the broader 0 <= gamma < 1 range (not just
+# exactly gamma=0) across real CNN/ViT/U-Net training runs on CIFAR-10
+# and MNIST, and proposes the same "add an epsilon inside the
+# modulating factor" mitigation used in production fixes -- this repo's
+# stable variant instead uses an exact algebraic rewrite (see
+# stable_focal_loss_grad below) that needs no epsilon at all.
+
+
+def naive_focal_loss_grad(logit, target: int, gamma: float, alpha: float, dtype):
+    """d(FL)/dx via the literal, un-simplified product/chain rule --
+    reproduces the sam3#575 failure shape: an explicit
+    `(1 - p_t) ** (gamma - 1)` factor that is `0 ** -1 == inf` whenever
+    p_t saturates to exactly 1.0 and gamma <= 1, multiplied against a
+    simultaneously-vanishing `dp_t/dx` term for an IEEE754 `0 * inf`
+    indeterminate form (NaN), even though the true gradient at that
+    point is an ordinary small finite number."""
+    dt = DTYPES[dtype]
+    x = dt(logit)
+    with np.errstate(over="ignore"):
+        p = dt(1) / (dt(1) + np.exp(-x, dtype=dt))
+    if target == 1:
+        pt = p
+        alpha_t = dt(alpha)
+        dpt_dx = p * (dt(1) - p)
+    else:
+        pt = dt(1) - p
+        alpha_t = dt(1) - dt(alpha)
+        dpt_dx = -(p * (dt(1) - p))
+    one_minus_pt = dt(1) - pt
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        term1 = -dt(gamma) * (one_minus_pt ** dt(gamma - 1)) * dpt_dx * np.log(pt, dtype=dt)
+        term2 = (one_minus_pt ** dt(gamma)) * (dt(1) / pt) * dpt_dx
+        result = -alpha_t * (term1 + term2)
+    return float(result)
+
+
+def stable_focal_loss_grad(logit, target: int, gamma: float, alpha: float, dtype):
+    """d(FL)/dx via a closed form that never materializes a negative
+    power of `(1 - p_t)`: substituting `dp_t/dx = p_t*(1-p_t)` (target=1)
+    or `-p_t*(1-p_t)` (target=0) into the naive expression above and
+    cancelling the shared `(1-p_t)` (target=1) or `p_t` (target=0)
+    factor algebraically -- on paper, identical to the naive formula
+    everywhere both are well-defined -- leaves only NON-negative
+    integer/real powers of probabilities, which safely underflow to
+    0.0 (a correct, finite answer) instead of blowing up to inf/NaN.
+    This mirrors the real-world fixes (sam3 PR#576 routes gamma=0
+    through a numerically stable BCE-equivalent path; kornia PR#924
+    adds an epsilon) without needing an ad hoc epsilon: the algebraic
+    rewrite removes the negative-power term entirely."""
+    dt = DTYPES[dtype]
+    x = dt(logit)
+    with np.errstate(over="ignore"):
+        p = dt(1) / (dt(1) + np.exp(-x, dtype=dt))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        if target == 1:
+            one_minus_p = dt(1) - p
+            log_p = np.log(p, dtype=dt)
+            bracket = dt(gamma) * p * log_p - one_minus_p
+            result = dt(alpha) * (one_minus_p ** dt(gamma)) * bracket
+        else:
+            log_one_minus_p = np.log(dt(1) - p, dtype=dt)
+            bracket = p - dt(gamma) * (dt(1) - p) * log_one_minus_p
+            result = (dt(1) - dt(alpha)) * (p ** dt(gamma)) * bracket
+    return float(result)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -590,4 +696,5 @@ KERNELS = {
     "rope_cos": (naive_rope_cos, stable_rope_cos),
     "int8_add": (naive_int8_add, stable_int8_add),
     "hll_register": (naive_hll_register_term, stable_hll_register_term),
+    "focal_loss_grad": (naive_focal_loss_grad, stable_focal_loss_grad),
 }

@@ -57,6 +57,15 @@ class Fixture:
     # harmonic-sum term 2**-rank the naive/stable kernels compute.
     # None for every other kernel.
     hll_rank: Optional[int] = None
+    # Focal-loss-gradient parameters, used only by focal_loss_grad
+    # fixtures: `values[0]` holds the pre-sigmoid logit, `target_index`
+    # (reused from the field above, 0 or 1) is the binary ground-truth
+    # label, and these three give the focusing exponent (gamma),
+    # class-balance weight (alpha), and precision the naive/stable
+    # kernels compute d(FocalLoss)/d(logit) at. None for every other
+    # kernel.
+    fl_gamma: Optional[float] = None
+    fl_alpha: Optional[float] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -685,6 +694,126 @@ HLL_REGISTER_FIXTURES = [
 ]
 
 
+FOCAL_LOSS_GRAD_FIXTURES = [
+    Fixture(
+        "everyday_unsaturated_gamma_two",
+        [0.0],
+        "An ordinary, unsaturated logit (x=0, p_t=0.5) at the default "
+        "gamma=2.0 focusing exponent from Lin et al.'s original paper "
+        "-- naive and stable should agree closely at every dtype; "
+        "control case showing the bug is conditional on saturation, "
+        "not the gradient formula being wrong in general.",
+        target_index=1,
+        fl_gamma=2.0,
+        fl_alpha=0.25,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "everyday_gamma_zero_unsaturated",
+        [0.0],
+        "gamma=0 (Focal Loss's own documented reduction to plain "
+        "alpha-weighted binary cross-entropy) at an unsaturated logit "
+        "-- the naive formula's (1-p_t)**(gamma-1) factor is well "
+        "away from 0**-1 here, so naive and stable agree closely; a "
+        "second control isolating 'gamma=0 alone' from 'saturation' "
+        "as two independently-necessary preconditions for the bug.",
+        target_index=1,
+        fl_gamma=0.0,
+        fl_alpha=0.5,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "saturated_correct_gamma_zero_float16",
+        [10.0],
+        "A confidently-correct, saturated logit (p_t underflows to "
+        "exactly 1.0 in float16 well before x=10) with gamma=0 -- the "
+        "sam3#575 failure shape: naive's (1-p_t)**(0-1) = 0.0**-1 = "
+        "inf, multiplied by a simultaneously-vanishing dp_t/dx, is an "
+        "IEEE754 0*inf = NaN, even though the true gradient here is an "
+        "ordinary tiny finite number (the network is simply very "
+        "confident and correct).",
+        target_index=1,
+        fl_gamma=0.0,
+        fl_alpha=0.5,
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "saturated_correct_gamma_zero_float32",
+        [18.0],
+        "The same saturation failure one dtype up: float32 underflows "
+        "1-sigmoid(18) to exactly 0.0, reproducing the identical "
+        "0**-1 * 0 = NaN shape as the float16 fixture above at a "
+        "logit magnitude realistic for a confidently-correct detector "
+        "output late in training.",
+        target_index=1,
+        fl_gamma=0.0,
+        fl_alpha=0.5,
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "saturated_correct_gamma_zero_float64",
+        [40.0],
+        "Same failure shape at float64 -- confirms the bug is not an "
+        "artifact of a narrow dtype's limited range, only of how far "
+        "the logit must saturate before 1-p_t underflows to exactly "
+        "0.0 at that dtype's precision (float64 needs a larger-"
+        "magnitude logit than float16/float32 to reach the same "
+        "underflow point).",
+        target_index=1,
+        fl_gamma=0.0,
+        fl_alpha=0.5,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "saturated_wrong_direction_gamma_zero_float32",
+        [-18.0],
+        "The mirror case: target=0 (the true class is the negative "
+        "class) and the logit is confidently, correctly very negative "
+        "-- p_t = 1-sigmoid(-18) again underflows to 1.0 in float32, "
+        "reproducing the identical 0**-1*0 = NaN shape via the "
+        "target=0 branch of the formula rather than target=1, "
+        "confirming the bug is symmetric across both classes.",
+        target_index=0,
+        fl_gamma=0.0,
+        fl_alpha=0.5,
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "saturated_fractional_gamma_float32",
+        [18.0],
+        "van Leeuwen et al. (TMLR 2025) show the same instability "
+        "occurs for any gamma in [0, 1), not just exactly gamma=0 -- "
+        "this fixture uses gamma=0.5 at the same saturated logit as "
+        "the gamma=0 float32 fixture above, confirming the failure is "
+        "not a special-cased 'gamma exactly equals zero' bug but a "
+        "genuine (1-p_t)**(gamma-1) exponent-goes-negative issue "
+        "across a whole sub-range of a real, published hyperparameter.",
+        target_index=1,
+        fl_gamma=0.5,
+        fl_alpha=0.25,
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "control_saturated_gamma_two_float32",
+        [18.0],
+        "Same saturated logit as the two fixtures above, but at the "
+        "common gamma=2.0 (Lin et al.'s recommended default, gamma >= "
+        "1) -- here (1-p_t)**(gamma-1) = (1-p_t)**1 is a NON-negative "
+        "power, so it safely underflows to 0.0 instead of blowing up "
+        "to inf, and the naive formula is actually fine. Included as "
+        "a control proving the bug is specific to gamma < 1, not "
+        "saturation alone -- exactly why real-world reports (sam3, "
+        "van Leeuwen et al.) needed to specifically call out the low-"
+        "gamma range rather than saturation in general.",
+        target_index=1,
+        fl_gamma=2.0,
+        fl_alpha=0.25,
+        dtypes=("float32",),
+        expect_naive_ok=True,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -699,6 +828,7 @@ FIXTURES_BY_KERNEL = {
     "rope_cos": ROPE_COS_FIXTURES,
     "int8_add": INT8_ADD_FIXTURES,
     "hll_register": HLL_REGISTER_FIXTURES,
+    "focal_loss_grad": FOCAL_LOSS_GRAD_FIXTURES,
 }
 
 

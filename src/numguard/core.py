@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -106,6 +106,12 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
     elif kernel == "hll_register":
         computed = fn(fixture.hll_rank)
         gold = reference.gold_hll_register_term(fixture.hll_rank)
+    elif kernel == "focal_loss_grad":
+        (logit,) = fixture.values
+        computed = fn(logit, fixture.target_index, fixture.fl_gamma, fixture.fl_alpha, dtype)
+        gold = reference.gold_focal_loss_grad(
+            logit, fixture.target_index, fixture.fl_gamma, fixture.fl_alpha
+        )
     else:
         raise ValueError(f"not a scalar kernel: {kernel}")
 

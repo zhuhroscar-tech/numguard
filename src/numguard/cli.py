@@ -28,7 +28,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Compare naive vs numerically-stable ML math kernels "
             "(softmax, log-sum-exp, cross-entropy, variance, layer_norm, "
             "rms_norm, kl_divergence, online_softmax, masked_softmax, "
-            "sum, rope_cos, int8_add, hll_register) against an independent high-precision "
+            "sum, rope_cos, int8_add, hll_register, focal_loss_grad) against an independent high-precision "
             "reference, across "
             "float16/float32/float64, on adversarial fixtures."
         ),

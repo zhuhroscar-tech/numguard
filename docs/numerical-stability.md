@@ -457,19 +457,93 @@ Like `int8_add`, `hll_register`'s input is a single integer register
 value rather than a dtype-swept float array, so it is scored at
 float64 only.
 
+## Sigmoid focal loss gradient
+
+**Textbook definition:** Lin et al.'s Focal Loss (arXiv:1708.02002)
+reshapes binary cross-entropy as `FL(p_t) = -alpha_t * (1 - p_t)**gamma
+* log(p_t)`, where `p_t` is the model's predicted probability of the
+TRUE class (`p` if the label is 1, `1-p` if the label is 0) and `gamma`
+is the "focusing" exponent that down-weights easy, already-correctly-
+classified examples. This kernel audits `d(FL)/dx` (`x` the pre-sigmoid
+logit) -- the quantity that actually drives training via
+backpropagation, not the loss value itself.
+
+**Naive formula** (`naive_focal_loss_grad`): the literal, un-simplified
+product/chain rule applied straight to the formula above, including an
+explicit `(1 - p_t)**(gamma - 1)` factor. This is mathematically
+correct wherever it is well-defined, but when `gamma <= 1` (which
+includes `gamma=0`, Focal Loss's own documented reduction to plain
+alpha-weighted binary cross-entropy) and the prediction has saturated
+in the correct direction (an ordinary, even desirable, training
+outcome -- `p_t` very close to `1`), `1 - p_t` underflows to exactly
+`0.0` in floating point, and `0.0 ** (gamma - 1)` with `gamma <= 1` is
+`0.0 ** (a non-positive exponent)`, i.e. a literal division by zero
+inside the power -- `inf` (or, for `gamma` strictly between 0 and 1,
+still blows up via the same negative-exponent mechanism). That `inf`
+is then multiplied by `dp_t/dx`, which has ALSO underflowed to `0.0` at
+the same saturation point -- an IEEE754 `0 * inf` indeterminate form
+that evaluates to `NaN` and poisons the entire gradient, even though
+the true gradient at that point is an ordinary, tiny, finite number.
+
+This is documented and independently confirmed in at least three
+distinct real codebases:
+- `facebookresearch/sam3#575` ("Reduced Triton sigmoid focal loss
+  returns NaN gradients for gamma=0 when logits saturate", filed and
+  fixed via PR#576) -- root-caused to exactly this
+  `(1 - p_t) ** (gamma - 1)` term evaluating `0 ** -1`, with the
+  reporter's own minimal repro (`x=18.0, y=1.0, gamma=0.0` ->
+  `x.grad = nan`) matching this kernel's `saturated_correct_gamma_zero_float32`
+  fixture almost exactly.
+- `kornia/kornia#918` / PR#924 ("NaN gradients on backward pass with
+  focal loss"), fixed by adding an epsilon inside the modulating
+  factor.
+- van Leeuwen et al., "A Note on the Stability of the Focal Loss" (TMLR
+  2025, OpenReview `eCYActnGbu`), which independently derives and
+  empirically demonstrates the identical failure across the broader
+  `0 <= gamma < 1` range (not just exactly `gamma=0`) in real CNN/ViT/
+  U-Net training runs on CIFAR-10 and MNIST, and proposes the same
+  "add an epsilon inside the modulating factor" mitigation used in the
+  production fixes above.
+
+**Stable formula** (`stable_focal_loss_grad`): an algebraic rewrite
+that substitutes `dp_t/dx = p_t*(1-p_t)` (target=1) or `-p_t*(1-p_t)`
+(target=0) into the naive expression and cancels the shared `(1-p_t)`
+(target=1) or `p_t` (target=0) factor by hand before ever evaluating a
+power -- on paper, algebraically identical to the naive formula
+everywhere both are well-defined, but the result contains only
+NON-negative powers of probabilities (`(1-p_t)**gamma` and `p_t**gamma`
+with `gamma >= 0`), which safely underflow to `0.0` (a correct, finite
+answer) instead of blowing up to `inf`/`NaN`. This mirrors the intent
+of the real-world fixes (sam3 PR#576 routes `gamma=0` through a
+numerically stable BCE-equivalent path; kornia PR#924 adds an epsilon)
+without needing an ad hoc epsilon constant: the algebraic rewrite
+removes the negative-power term entirely, for any `gamma >= 0`, not
+just the `gamma=0` special case.
+
+A control fixture (`control_saturated_gamma_two_float32`) uses the
+same saturated logit at the common `gamma=2.0` default (Lin et al.'s
+recommendation, `gamma >= 1`): here `(1-p_t)**(gamma-1) = (1-p_t)**1`
+is a non-negative power, so the naive formula is actually fine --
+confirming the bug is specific to `gamma < 1`, not to saturation alone.
+
 ## Independent ground truth
 
-All twelve derivations above are cross-checked in this repository against
-an independent implementation (`reference.py`) that uses Python's
-arbitrary-precision `decimal.Decimal` (50 significant digits) evaluated
-directly from the mathematical definitions -- not derived from the same
-numpy code paths being tested (this includes `rope_cos`'s reference
-`cos()`, computed via a from-scratch Decimal Taylor series, deliberately
-not `math.cos`, so that a bug shared with a float64 trig implementation
-could not hide behind comparing against itself). This means a bug
-shared between the naive and stable numpy formulas (e.g. both computing
-the wrong quantity) would not be masked by comparing them only to
-each other. `numguard
+All thirteen derivations above are cross-checked in this repository
+against an independent implementation (`reference.py`) that uses
+Python's arbitrary-precision `decimal.Decimal` (50 significant digits)
+evaluated directly from the mathematical definitions -- not derived
+from the same numpy code paths being tested (this includes
+`rope_cos`'s reference `cos()`, computed via a from-scratch Decimal
+Taylor series, deliberately not `math.cos`, so that a bug shared with a
+float64 trig implementation could not hide behind comparing against
+itself; and `focal_loss_grad`'s reference, computed via a symmetric
+central-difference numerical derivative of the focal loss formula
+itself at 50-digit precision, deliberately not via either kernel's
+analytic chain-rule derivation, so a shared algebra mistake in the
+naive/stable gradient formulas could not hide behind comparing them
+only to each other). This means a bug shared between the naive and
+stable numpy formulas (e.g. both computing the wrong quantity) would
+not be masked by comparing them only to each other. `numguard
 --check-naive-fails` (run in CI on every push) asserts that every naive
 fixture documented above still actually fails, and every stable
 counterpart still actually passes -- proving these are live regression
@@ -518,3 +592,18 @@ tests, not decorative claims.
   bfloat16 loses precision on long contexts") -- the real-world fix
   `stable_rope_cos` implements, now load-bearing boilerplate in every
   RoPE implementation in that codebase.
+- Lin, T-Y., Goyal, P., Girshick, R., He, K., Dollár, P. (2017), "Focal
+  Loss for Dense Object Detection" (arXiv:1708.02002) -- introduces the
+  Focal Loss formula `focal_loss_grad` audits the gradient of.
+- `facebookresearch/sam3#575` / PR#576 ("Reduced Triton sigmoid focal
+  loss returns NaN gradients for gamma=0 when logits saturate") -- the
+  real-world bug report and fix `naive_focal_loss_grad`/
+  `stable_focal_loss_grad` reproduce and resolve.
+- `kornia/kornia#918` / PR#924 ("NaN gradients on backward pass with
+  focal loss") -- an independent real-world instance of the same
+  failure family in a different codebase.
+- van Leeuwen, M.P., Haak, K.V., Saygili, G., Postma, E.O., Ong, L.L.S.
+  (2025), "A Note on the Stability of the Focal Loss", Transactions on
+  Machine Learning Research (OpenReview `eCYActnGbu`) -- independently
+  derives and empirically demonstrates the same instability across the
+  broader `0 <= gamma < 1` range in real CNN/ViT/U-Net training runs.
