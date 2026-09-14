@@ -52,6 +52,11 @@ class Fixture:
     scale_b: Optional[float] = None
     zp_out: Optional[int] = None
     scale_out: Optional[float] = None
+    # Register rank (leading-zero-run length + 1), used only by
+    # hll_register fixtures -- the HyperLogLog register value whose
+    # harmonic-sum term 2**-rank the naive/stable kernels compute.
+    # None for every other kernel.
+    hll_rank: Optional[int] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -628,6 +633,58 @@ INT8_ADD_FIXTURES = [
 ]
 
 
+HLL_REGISTER_FIXTURES = [
+    Fixture(
+        "everyday_small_rank",
+        [],
+        "A typical register value (leading-zero run of 17, well below "
+        "the 32-bit shift-width boundary) -- the shift distance is never "
+        "masked here, so a correct and a buggy fixed-width-32 shift "
+        "agree exactly. Control case.",
+        hll_rank=17,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "boundary_rank_31",
+        [],
+        "One below the 32-bit shift-width boundary (rank=31, so the "
+        "shift distance 31 is still representable un-masked by `% 32`) "
+        "-- the last rank where a 32-bit-int shift bug and the correct "
+        "answer coincide. Control case confirming the bug is specifically "
+        "an off-by-boundary shift-width defect, not a general rank issue.",
+        hll_rank=31,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "flink_39399_repro_rank_35",
+        [],
+        "The exact repro from Apache Flink FLINK-39399: a register "
+        "holding value 35 (>= 32, reachable with 64-bit hashes at "
+        "billion-plus real-world cardinalities). The buggy `1 << mIdx` "
+        "using a 32-bit Java int silently computes `1 << (35 % 32)` = "
+        "`1 << 3` = 8 instead of the true 2**35 (~3.4e10), corrupting "
+        "the register's harmonic-sum contribution by ten orders of "
+        "magnitude -- reproducing the issue's own reported effect (a "
+        "~95K estimate collapsing what should be a ~4e14 cardinality).",
+        hll_rank=35,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "far_beyond_boundary_rank_51",
+        [],
+        "A near-maximum register value for a 64-bit hash with typical "
+        "HLL precision (max rank is about 64 - p + 1; p=14 gives up to "
+        "~51) -- confirms the bug isn't confined to values just past 32 "
+        "but corrupts the entire upper half of the representable range "
+        "(`1 << (51 % 32)` = `1 << 19`, wrong by a factor of ~2**32).",
+        hll_rank=51,
+        dtypes=("float64",),
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -641,6 +698,7 @@ FIXTURES_BY_KERNEL = {
     "sum": SUM_FIXTURES,
     "rope_cos": ROPE_COS_FIXTURES,
     "int8_add": INT8_ADD_FIXTURES,
+    "hll_register": HLL_REGISTER_FIXTURES,
 }
 
 

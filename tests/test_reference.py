@@ -194,3 +194,9 @@ def test_gold_int8_add_respects_nonzero_zero_points():
     # sum = 3.0, requantized at (scale=0.2, zp=-10) -> code 5
     result = reference.gold_int8_add(-10.0, 5.0, -10, 0.2, -10, 0.2, -10, 0.2)
     assert float(result) == pytest.approx(5.0)
+
+
+def test_gold_hll_register_term_matches_exact_power_of_two():
+    for rank in (0, 1, 17, 31, 32, 35, 51):
+        result = reference.gold_hll_register_term(rank)
+        assert float(result) == pytest.approx(2.0 ** -rank, rel=1e-12)

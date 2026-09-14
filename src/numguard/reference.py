@@ -289,3 +289,15 @@ def gold_int8_add(
     if raw_code > qmax:
         return qmax
     return raw_code
+
+
+def gold_hll_register_term(rank: int) -> Decimal:
+    """Spec-correct HyperLogLog register harmonic-sum term: exactly
+    2**-rank, computed via Decimal exponentiation -- deliberately not
+    built from any integer-shift code path (the thing under test),
+    matching this file's independence guarantee that a bug shared
+    between naive and stable could not hide behind comparing them only
+    to each other."""
+    ctx = _ctx()
+    two = ctx.create_decimal(2)
+    return ctx.power(two, ctx.create_decimal(-rank))

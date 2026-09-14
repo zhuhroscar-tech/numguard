@@ -562,3 +562,52 @@ class TestInt8AddQuantMismatch:
         stable = kernels.stable_int8_add(50.0, 30.0, 0, 0.1, 0, 0.1, 0, 0.1)
         assert naive == pytest.approx(stable)
         assert naive == pytest.approx(80.0)
+
+
+class TestHLLRegisterShiftOverflow:
+    """hll_register: regression tests pinning the exact FLINK-39399
+    failure shape (a fixed-width 32-bit int shift silently masking the
+    shift distance modulo 32 for rank >= 32) so a future change that
+    "fixes" the naive kernel or weakens a fixture would be caught here
+    even if core.py's tolerance were loosened."""
+
+    def test_naive_and_stable_agree_below_shift_width(self):
+        # Control: rank=17 never approaches the 32-bit shift-width
+        # boundary, so `rank % 32 == rank` and both formulas compute
+        # the identical, correct 2**-17.
+        naive = kernels.naive_hll_register_term(17)
+        stable = kernels.stable_hll_register_term(17)
+        assert naive == pytest.approx(stable)
+        assert naive == pytest.approx(2.0 ** -17)
+
+    def test_naive_and_stable_agree_at_boundary_rank_31(self):
+        # Control: rank=31 is the last value where `rank % 32 == rank`
+        # -- confirms the divergence below is specifically a >=32
+        # shift-width defect, not a general off-by-one in rank handling.
+        naive = kernels.naive_hll_register_term(31)
+        stable = kernels.stable_hll_register_term(31)
+        assert naive == pytest.approx(stable)
+        assert naive == pytest.approx(2.0 ** -31)
+
+    def test_naive_diverges_from_stable_at_flink_39399_repro_rank(self):
+        # FLINK-39399's own repro: rank=35. The buggy 32-bit shift
+        # computes `1 << (35 % 32)` = `1 << 3` = 8, giving a term of
+        # 1/8 = 0.125 -- ten orders of magnitude too large compared to
+        # the true 2**-35 (~2.9e-11). This is a real, qualitatively
+        # different wrong answer, not merely an imprecise one.
+        naive = kernels.naive_hll_register_term(35)
+        stable = kernels.stable_hll_register_term(35)
+        assert naive == pytest.approx(0.125)
+        assert stable == pytest.approx(2.0 ** -35)
+        assert naive != pytest.approx(stable)
+        # The naive term is roughly 2**32 times too large.
+        assert naive / stable == pytest.approx(2.0 ** 32, rel=1e-9)
+
+    def test_naive_diverges_far_beyond_boundary_rank_51(self):
+        # A near-maximum real register value (64-bit hash, p=14 gives
+        # up to ~51): confirms the bug corrupts the entire upper half
+        # of the representable range, not just values just past 32.
+        naive = kernels.naive_hll_register_term(51)
+        stable = kernels.stable_hll_register_term(51)
+        assert naive != pytest.approx(stable)
+        assert stable == pytest.approx(2.0 ** -51)

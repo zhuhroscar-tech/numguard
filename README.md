@@ -134,16 +134,25 @@ a blog post or a framework-internal function you have to trust blindly.
   float range/cancellation (verified in this repo: `int8_add`'s
   `mismatched_scale_residual_add` and `int8_saturation_wraparound`
   fixtures).
+- **HyperLogLog register term** (`hll_register`): a register's harmonic-
+  sum contribution is `2**-rank`. A naive kernel computes this via a
+  fixed-width 32-bit integer left shift (`1 << rank`), silently masking
+  the shift distance modulo 32 once `rank >= 32` -- reproducing Apache
+  Flink's FLINK-39399 bug (a register holding 35 wrongly estimates
+  ~95,000 instead of ~4e14), corroborated by ClickHouse's `uniqHLL12`
+  large-cardinality bug report and Druid's sparse-mode register-overflow
+  issue. This is a different bug class again: fixed-width integer
+  overflow, not float precision or quantization bookkeeping.
 
 ## What this does
 
-For each of twelve kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of thirteen kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
-`masked_softmax`, `sum`, `rope_cos`, `int8_add`), across three
-dtypes (`float16`, `float32`, `float64` -- `int8_add` is scored at
-`float64` only, since it audits integer quantization codes rather than
-a dtype-swept float array), on a curated set of
-adversarial and everyday fixtures, numguard:
+`masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`), across
+three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
+`hll_register` are scored at `float64` only, since they audit integer
+codes/register values rather than a dtype-swept float array), on a
+curated set of adversarial and everyday fixtures, numguard:
 
 1. Runs the naive (textbook) formula and the stable (standard
    mitigation) formula, both implemented in plain numpy.

@@ -528,6 +528,54 @@ def stable_int8_add(a_code, b_code, zp_a, scale_a, zp_b, scale_b, zp_out, scale_
     return float(clamped)
 
 
+# --- HyperLogLog register term (fixed-width integer shift overflow) --
+
+# A real, documented, currently-relevant bug class, categorically
+# distinct from every kernel above (all of which are either float-
+# range/cancellation bugs or int8-requantization bookkeeping bugs):
+# a *fixed-width integer left-shift* that silently wraps instead of
+# producing the intended value. Apache Flink FLINK-39399 (filed and
+# fixed in 2026): HyperLogLogPlusPlus.query() computes each register's
+# harmonic-sum contribution via `1 << mIdx`, where the literal `1` is
+# an ordinary Java `int` and `mIdx` is the register's stored value. Per
+# JLS 15.19, shifting a 32-bit int by a distance >= 32 uses only the
+# distance's low 5 bits (i.e. `distance % 32`), so once a register's
+# value reaches 32 or more the shift silently computes `1 << (mIdx %
+# 32)` -- a small, wrong integer -- instead of overflowing loudly or
+# computing the intended (arbitrarily large) power of two. The Flink
+# issue's own repro: a register holding 35 with the bug reports an
+# estimate of ~95K; the fix (change `1` to `1L`, i.e. widen the shift
+# to 64 bits) reports the correct ~4e14. This register-value range is
+# not exotic: HyperLogLog implementations deliberately use 64-bit
+# hashes specifically so cardinalities beyond 2^32 can be represented
+# (see the ClickHouse uniqHLL12 large-cardinality bug report, and the
+# HyperLogLog++ paper's own justification for 64-bit hashing) -- and
+# once you hash with 64 bits, leading-zero-run lengths of 32+ occur
+# routinely at billion-plus cardinalities, exactly where a cardinality
+# estimator is most needed and least excusable to silently corrupt.
+HLL_SHIFT_BITS = 32
+
+
+def naive_hll_register_term(rank: int) -> float:
+    """The buggy FLINK-39399 shape: compute a register's harmonic-sum
+    contribution 2**-rank via a fixed-width 32-bit integer left shift
+    of 1, reproducing the JLS int-shift distance masking (mod 32) that
+    silently corrupts the result for rank >= 32 instead of computing
+    the true (much smaller) value."""
+    masked_shift = rank % HLL_SHIFT_BITS  # the bug: shift distance is masked
+    shifted = int(np.int32(1)) << masked_shift
+    return 1.0 / float(shifted)
+
+
+def stable_hll_register_term(rank: int) -> float:
+    """Spec-correct: no fixed-width shift at all. A register's harmonic-
+    sum contribution is exactly 2**-rank; computing it via Python's
+    arbitrary-precision integers/floats (or, in the real Flink fix, a
+    64-bit `long` shift) never wraps for any register value a 64-bit
+    hash can actually produce (max ~64-p, far below 64)."""
+    return 2.0 ** (-rank)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -541,4 +589,5 @@ KERNELS = {
     "sum": (naive_sum, stable_sum),
     "rope_cos": (naive_rope_cos, stable_rope_cos),
     "int8_add": (naive_int8_add, stable_int8_add),
+    "hll_register": (naive_hll_register_term, stable_hll_register_term),
 }

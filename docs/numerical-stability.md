@@ -394,6 +394,69 @@ quantization codes rather than a dtype-swept float array, so it is
 scored at float64 only (there is no float16/float32/float64 variant of
 "which dtype is an int8 code stored in").
 
+## HyperLogLog register term
+
+**Textbook definition:** HyperLogLog (Flajolet et al., 2007) estimates
+set cardinality from `m` registers, each storing the length of the
+longest leading-zero run seen in a hashed element's bits (its "rank").
+The cardinality estimate is a harmonic mean built from each register's
+contribution `2**-rank` summed across all `m` registers. This kernel
+isolates exactly that one per-register term -- the smallest unit where
+a real, documented implementation bug lives.
+
+Unlike every other kernel in this repo (float range/cancellation bugs,
+or `int8_add`'s quantization-bookkeeping bug), this bug is a **fixed-
+width integer left-shift** silently wrapping instead of computing the
+intended value:
+
+- Apache Flink, FLINK-39399 ("Integer overflow in
+  HyperLogLogPlusPlus.query() causes APPROX_COUNT_DISTINCT undercount
+  at high cardinality"): `HyperLogLogPlusPlus.query()` computes
+  `1 << mIdx` where the literal `1` is an ordinary 32-bit Java `int`.
+  Per the Java Language Specification section 15.19, shifting a 32-bit
+  int by a distance >= 32 uses only the distance's low 5 bits (i.e.
+  `distance % 32`), so once a register's stored rank reaches 32 or
+  more, the shift silently computes a small, wrong power of two
+  instead of overflowing loudly or computing the intended (much
+  larger) value. The issue's own reported repro: a register holding
+  35 produces an estimate of ~95,000 with the bug; the fix (widening
+  the shift to a 64-bit `long`, i.e. changing the literal `1` to `1L`)
+  produces the correct ~4e14.
+- This register-value range is not exotic or contrived: real HyperLogLog
+  implementations deliberately hash to 64 bits specifically so
+  cardinalities beyond 2^32 can be represented (see Heule, Nunkesser,
+  Hall, "HyperLogLog in Practice", 2013, and the ClickHouse `uniqHLL12`
+  large-cardinality bug report below) -- and once hashing uses 64 bits,
+  leading-zero-run lengths of 32+ occur routinely at billion-plus real
+  cardinalities, exactly where a cardinality estimator is most needed
+  and least excusable to silently corrupt.
+- ClickHouse PR #1844 ("Fix uniqHLL12 and uniqCombined for cardinalities
+  100M+"), filed by Cloudflare: reports `uniqHLL12` returning "rubbish
+  -- either 0 or a very inaccurate result" above ~200M elements, with
+  the fix's own analysis pointing at exactly this class of large-range/
+  large-register-value correction defect.
+- Apache Druid issue #19649 ("HyperLogLogCollector estimates 0
+  cardinality when single element overflows into sparse mode"): a
+  related but distinct register-overflow defect in Druid's sparse
+  representation, corroborating that fixed-width register/overflow
+  bookkeeping is a recurring, cross-implementation HyperLogLog failure
+  family, not a one-off bug in a single codebase.
+
+**Naive formula** (`naive_hll_register_term`): computes a register's
+harmonic-sum term via `int(np.int32(1)) << (rank % 32)` -- reproducing
+the JLS 32-bit-int shift-distance masking that silently corrupts the
+result for `rank >= 32` instead of computing the true (much larger)
+power of two.
+
+**Stable formula** (`stable_hll_register_term`): computes `2.0 **
+(-rank)` directly with no fixed-width shift at all -- matching the
+real Flink fix's approach of widening to a shift width that can never
+be exceeded by any register value a 64-bit hash can actually produce.
+
+Like `int8_add`, `hll_register`'s input is a single integer register
+value rather than a dtype-swept float array, so it is scored at
+float64 only.
+
 ## Independent ground truth
 
 All twelve derivations above are cross-checked in this repository against
