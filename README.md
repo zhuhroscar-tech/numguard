@@ -204,14 +204,28 @@ a blog post or a framework-internal function you have to trust blindly.
   class again: a total silent stall from repeated intermediate
   rounding, not a formula or cross-distribution mismatch.
 
+- **Gradient-accumulation loss bias** (`gradient_accumulation_bias`):
+  the real HuggingFace Trainer / PyTorch-Lightning#20350 bug
+  (huggingface.co/blog/gradient_accumulation, reported by Benjamin
+  Marie and independently by Unsloth in 2024). Gradient accumulation is
+  supposed to be mathematically equivalent to full-batch training, but
+  naively averaging each accumulated micro-batch's own mean per-token
+  loss -- instead of summing every micro-batch's total loss first and
+  dividing once by the total token count across the whole accumulation
+  window -- is biased whenever the micro-batches have different
+  non-padding token counts, the normal case for variable-length
+  sequences. A different bug class again: an aggregation-order mistake
+  across multiple accumulation steps, not a single expression's
+  numerical behavior or a per-step storage-precision artifact.
+
 ## What this does
 
-For each of twenty-one kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty-two kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
 `geometric_mean`, `p2_quantile`, `repetition_penalty`,
-`speculative_reject`, `weight_decay`),
+`speculative_reject`, `weight_decay`, `gradient_accumulation_bias`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
 `hll_register` are scored at `float64` only, since they audit integer
 codes/register values rather than a dtype-swept float array), on a

@@ -1144,3 +1144,62 @@ class TestWeightDecayStorageStall:
         assert naive == pytest.approx(float(gold), rel=1e-9, abs=1e-10)
         assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-10)
 
+
+class TestGradientAccumulationBias:
+    """The real HuggingFace Trainer / PyTorch-Lightning#20350 bug
+    (huggingface.co/blog/gradient_accumulation, reported by Benjamin
+    Marie and independently by Unsloth in 2024): gradient accumulation
+    is supposed to be mathematically equivalent to full-batch training,
+    but averaging each micro-batch's own mean per-token loss (instead
+    of dividing the total summed loss by the total token count) is
+    biased whenever the accumulated micro-batches have different
+    non-padding token counts -- the normal case for variable-length
+    sequences. stable_gradient_accumulation_bias implements the fix HF
+    actually shipped (PR#34198): sum first, divide once by the total
+    token count.
+    """
+
+    def test_naive_matches_stable_when_token_counts_equal_control(self):
+        # Control case: when every micro-batch has the same token
+        # count, the naive mean-of-means formula reduces algebraically
+        # to the same value as the correct token-weighted global mean
+        # -- confirms the bug requires actual length variation, not
+        # merely "any gradient accumulation at all".
+        g = [10.0, 12.0, 11.0]
+        n = [8.0, 8.0, 8.0]
+        gold = reference.gold_gradient_accumulation_bias(g, n)
+        naive = kernels.naive_gradient_accumulation_bias(g, n, "float64")
+        stable = kernels.stable_gradient_accumulation_bias(g, n, "float64")
+        assert naive == pytest.approx(float(gold), rel=1e-9, abs=1e-10)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-10)
+
+    def test_naive_diverges_stable_matches_moderate_imbalance(self):
+        # The documented bug shape: naive averages per-microbatch means
+        # (1.333...) instead of the true token-weighted mean (1.300),
+        # a ~2.9% relative bias comfortably outside numguard's float32
+        # tolerance (atol=1e-5, rtol=1e-4).
+        g = [10.0, 25.0, 4.0]
+        n = [7.0, 20.0, 3.0]
+        gold = reference.gold_gradient_accumulation_bias(g, n)
+        naive = kernels.naive_gradient_accumulation_bias(g, n, "float32")
+        stable = kernels.stable_gradient_accumulation_bias(g, n, "float32")
+        assert naive != pytest.approx(float(gold), rel=1e-4, abs=1e-5)
+        assert stable == pytest.approx(float(gold), rel=1e-4, abs=1e-5)
+
+    def test_naive_diverges_more_under_severe_imbalance(self):
+        # A short outlier micro-batch (2 tokens) accumulated alongside
+        # two long ones (40, 38 tokens): naive's unweighted 1/k
+        # averaging lets the short sequence's per-token mean pull the
+        # aggregate loss further from the true value than the moderate
+        # -imbalance case above, confirming the bias magnitude tracks
+        # how uneven the token-count distribution is.
+        g = [50.0, 48.0, 2.0]
+        n = [40.0, 38.0, 2.0]
+        gold = reference.gold_gradient_accumulation_bias(g, n)
+        naive = kernels.naive_gradient_accumulation_bias(g, n, "float32")
+        stable = kernels.stable_gradient_accumulation_bias(g, n, "float32")
+        naive_err = abs(naive - float(gold))
+        moderate_relerr = 0.037302 / 1.300000  # from the moderate-imbalance case
+        assert naive_err / float(gold) > moderate_relerr
+        assert stable == pytest.approx(float(gold), rel=1e-4, abs=1e-5)
+

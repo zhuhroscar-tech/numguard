@@ -881,7 +881,49 @@ shrinks the float64 master correctly, so decay accumulates exactly as
 configured; only the final read-out loses precision, not the
 thousands of intermediate steps.
 
-All twenty-one derivations above are cross-checked in this repository
+## Gradient-accumulation loss bias
+
+**Textbook definition:** gradient accumulation is intended to be
+mathematically equivalent to training on one large batch: split a
+target effective batch into `k` smaller micro-batches, run each
+forward/backward pass separately, and combine the `k` micro-batch
+losses into the same large-batch loss the single big batch would have
+produced. For token-level losses (e.g. causal-LM cross-entropy), the
+true large-batch mean is `sum(all per-token losses) / (total number of
+non-padding tokens across all k micro-batches)`.
+
+**Naive formula** (`naive_gradient_accumulation_bias`): compute each
+micro-batch's own mean per-token loss `g_i / n_i` (its summed loss
+divided by its own token count), then average those `k` per-microbatch
+means: `(1/k) * sum(g_i / n_i)`. This is exactly the
+`loss = loss / self.args.gradient_accumulation_steps` shape the
+pre-fix HuggingFace `Trainer` used (huggingface.co/blog/gradient_accumulation,
+originally reported by Benjamin Marie and independently rediscovered by
+Unsloth in 2024, and the identical failure documented in
+Lightning-AI/pytorch-lightning#20350: "Gradient accumulation
+calculation may be incorrect"). Whenever the `k` micro-batches have
+*different* non-padding token counts `n_i` -- the normal case for
+variable-length sequences padded per micro-batch rather than globally
+-- this mean-of-means double-counts short micro-batches and
+under-counts long ones relative to their true share of the accumulated
+batch: `naive - true = sum_i g_i * (1/(k*n_i) - 1/N)` where `N = sum(n_i)`,
+which is non-zero exactly when the `n_i` are unequal and vanishes only
+in the degenerate case where every micro-batch has the same token
+count.
+
+**Stable formula** (`stable_gradient_accumulation_bias`): the fix
+HuggingFace actually shipped
+(huggingface.co/blog/gradient_accumulation, PR#34198) and the
+equivalent correction independently arrived at for PyTorch-Lightning
+(discuss.huggingface.co/t/bug-in-gradient-accumulation-training-step...):
+sum every micro-batch's *summed* per-token loss across the whole
+accumulation window first, then divide **once** by the *total*
+non-padding token count across all `k` micro-batches:
+`sum(g_i) / sum(n_i)`. This is the true large-batch-equivalent mean
+regardless of how unevenly tokens are distributed across the
+accumulated steps.
+
+All twenty-two derivations above are cross-checked in this repository
 against an independent implementation (`reference.py`) that uses
 Python's arbitrary-precision `decimal.Decimal` (50 significant digits)
 evaluated directly from the mathematical definitions -- not derived
@@ -894,10 +936,15 @@ central-difference numerical derivative of the focal loss formula
 itself at 50-digit precision, deliberately not via either kernel's
 analytic chain-rule derivation, so a shared algebra mistake in the
 naive/stable gradient formulas could not hide behind comparing them
-only to each other; and `weight_decay`'s reference, computed via
+only to each other; `weight_decay`'s reference, computed via
 Decimal exponentiation of the exact closed-form geometric-decay
 identity, deliberately not by looping the kernel's own step-by-step
-multiply). This means a bug shared between the naive and
+multiply; and `gradient_accumulation_bias`'s reference, computed
+directly from the `sum(g_i)/sum(n_i)` definition in Decimal, which is
+mathematically identical to both the naive and stable formulas'
+intended target -- they differ only in evaluation order, not in which
+quantity is being computed, so this single reference is valid ground
+truth for scoring both). This means a bug shared between the naive and
 stable numpy formulas (e.g. both computing the wrong quantity) would
 not be masked by comparing them only to each other. `numguard
 --check-naive-fails` (run in CI on every push) asserts that every naive

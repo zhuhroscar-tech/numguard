@@ -1377,6 +1377,74 @@ WEIGHT_DECAY_FIXTURES = [
     ),
 ]
 
+GRADIENT_ACCUMULATION_BIAS_FIXTURES = [
+    Fixture(
+        "equal_token_counts_control",
+        [10.0, 12.0, 11.0],
+        "Every micro-batch happens to have the SAME non-padding token "
+        "count (no length variation this accumulation window) -- a "
+        "genuine control case, not a constructed pass: when n_i is "
+        "constant across all k steps, the naive mean-of-means formula "
+        "and the correct token-weighted global mean are algebraically "
+        "identical (both reduce to sum(g_i) / (k*n)), so naive is "
+        "expected to also match the reference here.",
+        q_values=[8.0, 8.0, 8.0],
+        dtypes=("float16", "float32", "float64"),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "moderate_length_imbalance",
+        [10.0, 25.0, 4.0],
+        "The real huggingface.co/blog/gradient_accumulation / "
+        "PyTorch-Lightning#20350 bug pattern: 3 accumulated "
+        "micro-batches with moderately different non-padding token "
+        "counts (7, 20, 3), representative of ordinary variable-length "
+        "sequence batching. naive_gradient_accumulation_bias averages "
+        "the k per-microbatch MEANS (1.333/step) instead of dividing "
+        "the summed loss by the summed token count (1.300 true), a "
+        "~2.9% relative bias -- small-looking per step but, as the "
+        "Unsloth/HF write-ups document, systematic across an entire "
+        "training run and large enough to exceed this kernel's float32 "
+        "tolerance.",
+        q_values=[7.0, 20.0, 3.0],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "severe_length_imbalance",
+        [50.0, 48.0, 2.0],
+        "One much shorter sequence (2 non-padding tokens) accumulated "
+        "alongside two long ones (40, 38 tokens) -- the case that "
+        "actually matters in practice: a short outlier sequence's "
+        "per-token mean loss gets weighted EQUALLY with the long "
+        "sequences' means under the naive 1/k averaging, wildly "
+        "overweighting the short sequence's per-token loss relative to "
+        "its true share of the accumulated batch. Produces a larger "
+        "(~6.3%) relative divergence than the moderate-imbalance "
+        "fixture above at the same dtypes, confirming the bug's "
+        "magnitude scales with how uneven the token-count distribution "
+        "is, not merely whether it is uneven at all.",
+        q_values=[40.0, 38.0, 2.0],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "many_steps_typical_llm_finetune",
+        [120.0, 95.0, 200.0, 60.0, 150.0, 40.0, 180.0, 75.0],
+        "A more realistic 8-step accumulation window (gradient_"
+        "accumulation_steps=8, a common LoRA/QLoRA fine-tuning "
+        "setting) with token counts spanning a 4x range (32-512), "
+        "modeling a batch mixing short instructions with long "
+        "multi-turn conversations. Confirms the bias is not an "
+        "artifact of the toy 3-microbatch fixtures above -- it "
+        "persists (and stays outside float32 tolerance) at a step "
+        "count matching real training configurations.",
+        q_values=[64.0, 48.0, 512.0, 32.0, 300.0, 40.0, 256.0, 80.0],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=False,
+    ),
+]
+
 
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -1400,6 +1468,7 @@ FIXTURES_BY_KERNEL = {
     "repetition_penalty": REPETITION_PENALTY_FIXTURES,
     "speculative_reject": SPECULATIVE_REJECT_FIXTURES,
     "weight_decay": WEIGHT_DECAY_FIXTURES,
+    "gradient_accumulation_bias": GRADIENT_ACCUMULATION_BIAS_FIXTURES,
 }
 
 

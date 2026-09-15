@@ -1224,6 +1224,47 @@ def stable_weight_decay(values, q_values, num_steps: int, dtype: str):
     return float(DTYPES[dtype](w))
 
 
+def naive_gradient_accumulation_bias(values, q_values, dtype: str) -> float:
+    """The real, widely-reported HuggingFace Trainer / PyTorch-Lightning
+    bug (huggingface.co/blog/gradient_accumulation, reported by Benjamin
+    Marie and independently by Unsloth in 2024, matching PyTorch-
+    Lightning#20350): gradient accumulation is supposed to be
+    mathematically equivalent to training on one large batch, but when
+    the k accumulated micro-batches have different non-padding TOKEN
+    COUNTS (the normal case for variable-length sequences), naively
+    computing each micro-batch's own MEAN per-token loss and then
+    averaging those k means is NOT the same as the true large-batch
+    mean. `values` holds the per-microbatch SUMMED per-token loss g_i
+    for each of the k accumulation steps; `q_values` holds the matching
+    per-microbatch non-padding token count n_i. This is the exact
+    "loss = loss / self.args.gradient_accumulation_steps" shape the
+    pre-fix HF Trainer used, applied here to a pre-summed per-step loss
+    for auditability without needing a real model or GPU.
+    """
+    g = _arr(values, dtype)
+    n = _arr(q_values, dtype)
+    dt = DTYPES[dtype]
+    k = dt(len(g))
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        per_step_mean = g / n
+        return float(dt(np.sum(per_step_mean) / k))
+
+
+def stable_gradient_accumulation_bias(values, q_values, dtype: str) -> float:
+    """The fix HuggingFace actually shipped (huggingface.co/blog/gradient_accumulation
+    PR#34198, and the equivalent fix in Unsloth and PyTorch-Lightning#20350):
+    sum every micro-batch's summed per-token loss FIRST across the whole
+    accumulation window, then divide once by the TOTAL non-padding token
+    count across all micro-batches -- the true large-batch-equivalent
+    mean regardless of how unevenly tokens are distributed across steps.
+    """
+    g = _arr(values, dtype)
+    n = _arr(q_values, dtype)
+    dt = DTYPES[dtype]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        return float(dt(np.sum(g)) / dt(np.sum(n)))
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1246,4 +1287,5 @@ KERNELS = {
     "repetition_penalty": (naive_repetition_penalty, stable_repetition_penalty),
     "speculative_reject": (naive_speculative_reject, stable_speculative_reject),
     "weight_decay": (naive_weight_decay, stable_weight_decay),
+    "gradient_accumulation_bias": (naive_gradient_accumulation_bias, stable_gradient_accumulation_bias),
 }

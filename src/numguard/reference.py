@@ -413,6 +413,20 @@ def gold_weight_decay(values, q_values, num_steps: int) -> Decimal:
     return ctx.multiply(w0_d, ctx.power(factor, Decimal(num_steps)))
 
 
+def gold_gradient_accumulation_bias(values, q_values) -> Decimal:
+    """sum(g_i) / sum(n_i) at 50-digit precision -- the true
+    large-batch-equivalent mean loss, derived directly from the
+    definition (total summed loss over total token count), independent
+    of either kernel's floating-point evaluation order. `values` holds
+    the per-microbatch summed per-token loss g_i, `q_values` holds the
+    matching per-microbatch token count n_i.
+    """
+    ctx = _ctx()
+    gs = _to_decimals(values)
+    ns = _to_decimals(q_values)
+    return ctx.divide(sum(gs, Decimal(0)), sum(ns, Decimal(0)))
+
+
 def gold_p2_quantile(values: Sequence[float], prob: float) -> Decimal:
     """P^2 (Piecewise-Parabolic) streaming quantile estimator (Jain &
     Chlamtac, CACM 1985), computed entirely in 50-digit Decimal
