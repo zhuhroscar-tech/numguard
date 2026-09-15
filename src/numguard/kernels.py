@@ -1479,6 +1479,69 @@ def stable_beam_search_length_penalty(
     return float(dt(cum_logprob) / denom)
 
 
+# --- int32 dequantization subtraction overflow -----------------------
+
+# A real, currently-open (state=open as of 2026-09-15), maintainers-
+# declined-to-fix bug: pytorch/pytorch#153358 ("torch.dequantize result
+# inconsistent on CPU and GPU"). CPU torch.dequantize for a qint32
+# tensor computes `(code - zero_point)` using ordinary 32-bit signed
+# integer subtraction, which silently WRAPS (two's-complement overflow)
+# when code and zero_point sit near opposite ends of the int32 range --
+# e.g. code=INT32_MAX, zero_point=INT32_MIN: the mathematically correct
+# difference is 2**32-1 (~4.29e9), but 32-bit wraparound yields -1,
+# giving a dequantized value with the WRONG SIGN and wrong magnitude,
+# not just reduced precision. GPU dequantize does not share this bug
+# (confirmed by the issue's own a-b.to("cpu") diff), so the failure is
+# silent and platform-dependent -- a model whose qint32 activations
+# hit this range dequantizes correctly on CUDA but wrong on CPU with no
+# error, warning, or NaN. A PyTorch maintainer (Xia-Weiwen) confirmed
+# the root cause and stated the team is deprecating the legacy
+# quantized-tensor path in favor of torchao and "probably won't fix
+# this issue" -- so the bug is real, understood, and will remain
+# unpatched in the legacy API for the foreseeable future. This is
+# categorically distinct from int8_add above (that kernel's bug is
+# requantization BOOKKEEPING -- reusing the wrong operand's scale/
+# zero_point, or missing a saturating clamp on the output) and from
+# every float-precision kernel elsewhere in this catalog: the defect
+# here is a fixed-width INTEGER subtraction overflow in the dequant
+# step itself, independent of any downstream requantization or
+# multiply. Reproduced from scratch on this host's installed
+# torch==2.14.0 before acceptance (see docs/numerical-stability.md):
+# torch.quantize_per_tensor(..., dtype=torch.qint32) with
+# scale=1e-10, zero_point=INT32_MIN and a value that quantizes to
+# INT32_MAX reproduces the issue's own exact symptom -- CPU
+# dequantize returns -1e-10 (wrong sign) instead of the correct
+# +0.4294967295.
+INT32_MIN, INT32_MAX = -2147483648, 2147483647
+
+
+def naive_int32_dequant_overflow(q_code, zero_point, scale) -> float:
+    """Dequantize using 32-bit signed integer subtraction of
+    (code - zero_point), matching torch's CPU qint32 dequantize kernel
+    (aten native code performs this subtraction in the tensor's native
+    int32 storage width before the float multiply). When code and
+    zero_point are far enough apart, the true difference exceeds the
+    int32 representable range and this wraps via two's-complement,
+    silently producing a wrong-sign, wrong-magnitude result -- exactly
+    pytorch/pytorch#153358's reported symptom."""
+    q32 = np.int32(q_code)
+    z32 = np.int32(zero_point)
+    with np.errstate(over="ignore"):
+        diff32 = np.subtract(q32, z32, dtype=np.int32)
+    return float(diff32) * float(scale)
+
+
+def stable_int32_dequant_overflow(q_code, zero_point, scale) -> float:
+    """Dequantize using 64-bit integer subtraction -- wide enough that
+    (code - zero_point) cannot overflow for any pair of int32 values
+    (the true range is [-2**32+1, 2**32-1], which fits comfortably in
+    int64) -- then multiply by scale, matching torch's own GPU
+    dequantize kernel's (bug-free) behavior and the textbook affine-
+    quantization definition real = (code - zero_point) * scale."""
+    diff64 = np.int64(q_code) - np.int64(zero_point)
+    return float(diff64) * float(scale)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1506,4 +1569,5 @@ KERNELS = {
     "squared_euclidean_distance": (naive_squared_euclidean_distance, stable_squared_euclidean_distance),
     "bpe_pair_count_overflow": (naive_bpe_pair_count_overflow, stable_bpe_pair_count_overflow),
     "beam_search_length_penalty": (naive_beam_search_length_penalty, stable_beam_search_length_penalty),
+    "int32_dequant_overflow": (naive_int32_dequant_overflow, stable_int32_dequant_overflow),
 }

@@ -722,3 +722,23 @@ def gold_longrope_factor_select(
     return [_decimal_cos(ctx.multiply(x, inv_freq_d), ctx) for x in xs]
 
 
+def gold_int32_dequant_overflow(q_code, zero_point, scale) -> Decimal:
+    """Spec-correct affine dequantization real = (code - zero_point) *
+    scale, computed at 50-digit Decimal precision with NO fixed-width
+    integer arithmetic anywhere -- (code - zero_point) is an exact,
+    unbounded-precision subtraction, independent of whether either
+    kernel under test happens to perform that subtraction in a 32-bit
+    or 64-bit integer register. This is the standard affine/zero-point
+    quantization definition (matches torch's own quantized-tensor
+    semantics, TFLite, and ONNX QuantizeLinear/DequantizeLinear) --
+    the correct ground truth pytorch/pytorch#153358 documents CPU
+    torch.dequantize silently failing to compute for qint32 tensors
+    when code and zero_point are far enough apart to overflow int32.
+    """
+    ctx = _ctx()
+    q = ctx.create_decimal(int(q_code))
+    z = ctx.create_decimal(int(zero_point))
+    s = ctx.create_decimal(repr(float(scale)))
+    return ctx.multiply(ctx.subtract(q, z), s)
+
+

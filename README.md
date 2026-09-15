@@ -300,19 +300,43 @@ a blog post or a framework-internal function you have to trust blindly.
   formula's own length term should measure, not a floating-point
   precision bug at all.
 
+- **int32 dequantization subtraction overflow** (`int32_dequant_overflow`):
+  a real, currently-open, maintainers-declined-to-fix bug --
+  pytorch/pytorch#153358 ("torch.dequantize result inconsistent on CPU
+  and GPU") -- where CPU `torch.dequantize` for a `qint32` tensor
+  computes `(code - zero_point)` using ordinary 32-bit signed integer
+  subtraction. When `code` and `zero_point` sit near opposite ends of
+  the int32 range (e.g. `code=INT32_MAX`, `zero_point=INT32_MIN`), the
+  true difference (`2**32-1`) exceeds what int32 can represent and
+  silently wraps via two's-complement to `-1` -- producing a
+  dequantized value with the WRONG SIGN, not merely reduced precision.
+  GPU dequantize does not share this bug (confirmed by the issue's own
+  CPU-vs-GPU diff), so the failure is silent and platform-dependent. A
+  PyTorch maintainer confirmed the root cause and stated the team is
+  deprecating the legacy quantized-tensor path in favor of `torchao`
+  and "probably won't fix this issue" -- reproduced from scratch
+  against this repo's installed `torch==2.14.0` before acceptance,
+  reproducing the issue's own exact wrong-sign symptom. A different bug
+  class again: a fixed-width INTEGER subtraction overflow in the
+  dequantization step itself, independent of any requantization
+  bookkeeping (see `int8_add` above) or float-precision concern.
+
 ## What this does
 
-For each of twenty-six kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty-seven kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
 `geometric_mean`, `p2_quantile`, `repetition_penalty`,
 `speculative_reject`, `weight_decay`, `gradient_accumulation_bias`,
 `longrope_factor_select`, `squared_euclidean_distance`,
-`bpe_pair_count_overflow`, `beam_search_length_penalty`),
+`bpe_pair_count_overflow`, `beam_search_length_penalty`,
+`int32_dequant_overflow`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add`,
-`hll_register`, and `bpe_pair_count_overflow` are scored at `float64`
-only, since they audit integer codes/register values/counts rather
+`hll_register`, `bpe_pair_count_overflow`, and `int32_dequant_overflow`
+are scored at `float64`
+only, since they audit integer codes/register values/counts/subtraction
+rather
 than a dtype-swept float array), on a
 curated set of adversarial and everyday fixtures, numguard:
 

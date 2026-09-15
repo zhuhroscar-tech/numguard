@@ -1180,6 +1180,68 @@ naive fixture documented above still actually fails, and every stable
 counterpart still actually passes -- proving these are live regression
 tests, not decorative claims.
 
+## int32 dequantization subtraction overflow
+
+**Textbook/reference definition:** affine (zero-point) dequantization
+is `real = (code - zero_point) * scale`, an exact algebraic
+subtraction and multiply -- the standard definition shared by
+PyTorch's own quantized-tensor semantics, TFLite, and ONNX
+QuantizeLinear/DequantizeLinear. The subtraction itself has no inherent
+width limit; it is only limited by whatever integer type the
+implementation happens to perform it in.
+
+**Naive formula** (`naive_int32_dequant_overflow`): perform
+`(code - zero_point)` using ordinary 32-bit signed integer arithmetic
+-- exactly what CPU `torch.dequantize` does internally for a `qint32`
+tensor. When `code` and `zero_point` are far enough apart that the true
+difference exceeds the representable range of a signed 32-bit integer
+(`[-2**31, 2**31-1]`), the subtraction silently wraps via
+two's-complement instead of raising an error or producing `inf`/`NaN`.
+This is a real, currently-open bug: pytorch/pytorch#153358 ("torch.
+dequantize result inconsistent on CPU and GPU"), whose own reported
+repro is `code=2147483647` (`INT32_MAX`), `zero_point=-2147483648`
+(`INT32_MIN`), `scale=1e-10` -- the true difference is `2**32-1`
+(~4.29e9), which wraps to `-1`, so CPU `torch.dequantize` returns
+`-1e-10` instead of the correct `+0.4294967295` -- a WRONG-SIGN result,
+not merely a precision loss. GPU dequantize does not share this bug
+(the issue's own reporter confirmed `a - b.to("cpu")` is nonzero,
+i.e. CPU and GPU disagree), so a model whose qint32 activations hit
+this range dequantizes correctly under CUDA but silently wrong under
+CPU, with no error, warning, or NaN to signal the problem. Reproduced
+from scratch against this repository's installed `torch==2.14.0`
+before this kernel was accepted (`torch.quantize_per_tensor` +
+`torch.dequantize` reproduce the issue's own exact `-1e-10` result for
+its own exact inputs). A PyTorch maintainer (Xia-Weiwen) confirmed the
+root cause in the issue thread and stated the team is moving to new
+dequantize ops in `torchao` and "probably won't fix this issue" --
+verified the issue is still `state=open` via the GitHub API immediately
+before acceptance, per this repository's reproduce-before-accept
+discipline.
+
+**Stable formula** (`stable_int32_dequant_overflow`): perform
+`(code - zero_point)` using 64-bit integer arithmetic instead. Since
+`code` and `zero_point` are each drawn from the 32-bit signed range,
+their difference is bounded by `[-(2**32-1), 2**32-1]`, which fits
+comfortably within int64's much larger range -- so no width-driven
+wraparound is possible for any pair of int32 inputs. This matches
+`torch.dequantize`'s own (bug-free) GPU-kernel behavior and the
+textbook affine-quantization definition.
+
+`int32_dequant_overflow`'s reference (`gold_int32_dequant_overflow`)
+computes `(Decimal(code) - Decimal(zero_point)) * Decimal(scale)`
+directly in 50-digit arbitrary-precision arithmetic, with NO fixed-width
+integer type anywhere -- independent of whether either kernel under
+test happens to perform the subtraction in a 32-bit or 64-bit register.
+`numguard --check-naive-fails` (run in CI on every push) asserts that
+every naive fixture documented above still actually fails -- including
+two boundary controls (a code/zero_point pair whose difference is
+exactly `INT32_MAX`, the largest value that still fits without
+wrapping, and an ordinary small-value control) that confirm naive and
+stable agree exactly right up to the wraparound boundary and diverge
+only once it is crossed -- and every stable counterpart still actually
+passes, proving these are live regression tests targeting the specific
+overflow boundary, not decorative claims.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

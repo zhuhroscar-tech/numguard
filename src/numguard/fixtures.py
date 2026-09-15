@@ -118,6 +118,16 @@ class Fixture:
     # the length-penalty exponent, when only output_len belongs there.
     bs_length_penalty: Optional[float] = None
     bs_ends_with_eos: Optional[bool] = None
+    # Dequantization parameters, used only by int32_dequant_overflow
+    # fixtures -- `values` holds [q_code] (the stored quantized integer
+    # code) and these two fields give the affine quantization's
+    # zero_point and scale: real = (q_code - zero_point) * scale. See
+    # pytorch/pytorch#153358: CPU torch.dequantize for qint32 tensors
+    # performs (code - zero_point) in 32-bit integer arithmetic, which
+    # silently wraps (two's-complement overflow) when the true
+    # difference exceeds int32 range. None for every other kernel.
+    dq_zero_point: Optional[int] = None
+    dq_scale: Optional[float] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -1809,6 +1819,85 @@ LONGROPE_FACTOR_SELECT_FIXTURES = [
 ]
 
 
+INT32_DEQUANT_OVERFLOW_FIXTURES = [
+    Fixture(
+        "pytorch_issue_153358_exact_repro",
+        [2147483647],
+        "The pytorch/pytorch#153358 issue's own exact repro values: "
+        "q_code=INT32_MAX, zero_point=INT32_MIN, scale=1e-10. The true "
+        "difference (2**32-1) overflows int32 subtraction, which wraps "
+        "to -1 -- naive dequantizes to -1e-10 (WRONG SIGN) instead of "
+        "the correct +0.4294967295. Confirmed live against this host's "
+        "installed torch==2.14.0: torch.dequantize on CPU returns "
+        "exactly this wrong -1e-10 value for this input.",
+        dq_zero_point=-2147483648,
+        dq_scale=1e-10,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "near_max_codes_large_scale",
+        [2147483647],
+        "A different (zero_point, scale) pair still near the int32 "
+        "extremes but not at the exact boundary values -- confirms "
+        "the wraparound is a property of the (code - zero_point) gap "
+        "itself, not specific to INT32_MIN/MAX literals.",
+        dq_zero_point=-2000000000,
+        dq_scale=1e-8,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "symmetric_extreme_offset",
+        [2000000000],
+        "Symmetric large-magnitude code/zero_point pair (neither at "
+        "the true int32 boundary) whose difference (4e9) still "
+        "exceeds int32 range -- naive wraps to a small negative "
+        "value instead of the correct +4.0.",
+        dq_zero_point=-2000000000,
+        dq_scale=1e-9,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "reversed_extreme_min_minus_max",
+        [-2147483648],
+        "Same magnitude gap as the issue's repro but with code and "
+        "zero_point swapped (code=INT32_MIN, zero_point=INT32_MAX) -- "
+        "confirms the bug is symmetric in sign: naive wraps to "
+        "+1e-10 instead of the correct -0.4294967295.",
+        dq_zero_point=2147483647,
+        dq_scale=1e-10,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "control_small_values_no_overflow",
+        [100],
+        "Control: ordinary small quantized codes (typical int8-range "
+        "values stored in a wider int32 field) where the difference "
+        "(200) is nowhere near int32's range -- naive and stable "
+        "agree exactly, confirming the bug requires a genuinely "
+        "large code/zero_point gap, not that 32-bit arithmetic is "
+        "always wrong.",
+        dq_zero_point=-100,
+        dq_scale=1e-3,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "control_boundary_just_under_overflow",
+        [1073741823],
+        "Control at the edge: code=2**30-1, zero_point=-2**30, so "
+        "the difference (2**31-1 = INT32_MAX) is the LARGEST value "
+        "that still fits in a signed 32-bit int without wrapping -- "
+        "naive and stable agree exactly here, proving the divergence "
+        "in the adversarial fixtures above is specifically caused by "
+        "crossing the int32 boundary, not merely using large numbers.",
+        dq_zero_point=-1073741824,
+        dq_scale=1e-9,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -1836,6 +1925,7 @@ FIXTURES_BY_KERNEL = {
     "squared_euclidean_distance": SQUARED_EUCLIDEAN_DISTANCE_FIXTURES,
     "bpe_pair_count_overflow": BPE_PAIR_COUNT_OVERFLOW_FIXTURES,
     "beam_search_length_penalty": BEAM_SEARCH_LENGTH_PENALTY_FIXTURES,
+    "int32_dequant_overflow": INT32_DEQUANT_OVERFLOW_FIXTURES,
 }
 
 

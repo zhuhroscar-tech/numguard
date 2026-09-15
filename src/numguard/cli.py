@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "speculative_reject, weight_decay, "
             "gradient_accumulation_bias, longrope_factor_select, "
             "squared_euclidean_distance, bpe_pair_count_overflow, "
-            "beam_search_length_penalty) against "
+            "beam_search_length_penalty, int32_dequant_overflow) against "
             "an independent "
             "high-precision reference, across "
             "float16/float32/float64, on adversarial fixtures."

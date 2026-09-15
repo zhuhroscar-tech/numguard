@@ -1537,6 +1537,112 @@ class TestBeamSearchLengthPenalty:
         assert naive != pytest.approx(float(gold), rel=1e-6, abs=1e-9)
         assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
 
+
+class TestInt32DequantOverflow:
+    """pytorch/pytorch#153358 ("torch.dequantize result inconsistent on
+    CPU and GPU"): CPU torch.dequantize for a qint32 tensor computes
+    (code - zero_point) using ordinary 32-bit signed integer
+    subtraction, which silently wraps (two's-complement overflow) when
+    code and zero_point are far enough apart. Confirmed still open (not
+    fixed) as of 2026-09-15 -- a PyTorch maintainer stated the legacy
+    quantized-tensor path is being deprecated in favor of torchao and
+    "probably won't fix this issue." Reproduced from scratch against
+    this host's installed torch==2.14.0 before this kernel was written.
+    """
+
+    def test_naive_wraps_stable_matches_issue_exact_repro(self):
+        # The issue's own exact repro: q_code=INT32_MAX,
+        # zero_point=INT32_MIN, scale=1e-10. True difference is
+        # 2**32-1 (~4.29e9); int32 wraps this to -1.
+        gold = reference.gold_int32_dequant_overflow(
+            2147483647, -2147483648, 1e-10,
+        )
+        naive = kernels.naive_int32_dequant_overflow(
+            2147483647, -2147483648, 1e-10,
+        )
+        stable = kernels.stable_int32_dequant_overflow(
+            2147483647, -2147483648, 1e-10,
+        )
+        assert float(gold) == pytest.approx(0.4294967295, rel=1e-9)
+        assert naive == pytest.approx(-1e-10, rel=1e-6, abs=1e-15)
+        assert naive != pytest.approx(float(gold), rel=1e-6, abs=1e-9)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-15)
+        # The wraparound doesn't just lose precision -- it flips sign.
+        assert (naive < 0) != (float(gold) < 0)
+
+    def test_naive_wraps_at_different_magnitude(self):
+        gold = reference.gold_int32_dequant_overflow(
+            2147483647, -2000000000, 1e-8,
+        )
+        naive = kernels.naive_int32_dequant_overflow(
+            2147483647, -2000000000, 1e-8,
+        )
+        stable = kernels.stable_int32_dequant_overflow(
+            2147483647, -2000000000, 1e-8,
+        )
+        assert naive != pytest.approx(float(gold), rel=1e-6, abs=1e-9)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+
+    def test_naive_wraps_symmetric_offset(self):
+        gold = reference.gold_int32_dequant_overflow(
+            2000000000, -2000000000, 1e-9,
+        )
+        naive = kernels.naive_int32_dequant_overflow(
+            2000000000, -2000000000, 1e-9,
+        )
+        stable = kernels.stable_int32_dequant_overflow(
+            2000000000, -2000000000, 1e-9,
+        )
+        assert float(gold) == pytest.approx(4.0, rel=1e-9)
+        assert naive != pytest.approx(4.0, rel=1e-6, abs=1e-9)
+        assert stable == pytest.approx(4.0, rel=1e-9, abs=1e-12)
+
+    def test_naive_wraps_reversed_sign(self):
+        # code and zero_point swapped relative to the exact-repro case
+        # -- confirms the bug is symmetric, not an artifact of which
+        # operand happens to be larger.
+        gold = reference.gold_int32_dequant_overflow(
+            -2147483648, 2147483647, 1e-10,
+        )
+        naive = kernels.naive_int32_dequant_overflow(
+            -2147483648, 2147483647, 1e-10,
+        )
+        stable = kernels.stable_int32_dequant_overflow(
+            -2147483648, 2147483647, 1e-10,
+        )
+        assert float(gold) == pytest.approx(-0.4294967295, rel=1e-9)
+        assert naive != pytest.approx(float(gold), rel=1e-6, abs=1e-9)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-15)
+
+    def test_both_agree_for_small_values(self):
+        # Control: ordinary small codes, nowhere near int32's range --
+        # naive and stable must agree exactly.
+        gold = reference.gold_int32_dequant_overflow(100, -100, 1e-3)
+        naive = kernels.naive_int32_dequant_overflow(100, -100, 1e-3)
+        stable = kernels.stable_int32_dequant_overflow(100, -100, 1e-3)
+        assert naive == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+        assert naive == pytest.approx(stable, rel=1e-9, abs=1e-12)
+
+    def test_both_agree_exactly_at_int32_boundary(self):
+        # Control at the edge: difference is exactly INT32_MAX
+        # (2**31-1), the largest value that still fits in a signed
+        # 32-bit int without wrapping -- naive and stable must still
+        # agree here, proving the bug is specifically about CROSSING
+        # the boundary, not merely using large numbers.
+        gold = reference.gold_int32_dequant_overflow(
+            1073741823, -1073741824, 1e-9,
+        )
+        naive = kernels.naive_int32_dequant_overflow(
+            1073741823, -1073741824, 1e-9,
+        )
+        stable = kernels.stable_int32_dequant_overflow(
+            1073741823, -1073741824, 1e-9,
+        )
+        assert naive == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+        assert naive == pytest.approx(stable, rel=1e-9, abs=1e-12)
+
     def test_reference_matches_direct_decimal_definition(self):
         gold = reference.gold_beam_search_length_penalty(
             [-20.0], [500, 40], 1.1, True,
