@@ -767,6 +767,49 @@ def stable_pearson_correlation(x_values, y_values, dtype: str) -> float:
     return max(min(r, 1.0), -1.0)
 
 
+# --- weighted-reservoir-sampling comparison key -------------------------
+
+def naive_weighted_sampling_key(u: float, weight: float, dtype: str) -> float:
+    """Literal Efraimidis-Spirakis A-Res key, log(u**(1/weight)), computed
+    by taking the power FIRST (as the algorithm's original paper and a
+    verbatim implementation do -- R's wrswoR package ships this as
+    `sample_int_expjs`, explicitly documented as \"at the cost of
+    numerical stability\") and only then taking the log to make it
+    comparable on a single scale across items with wildly different
+    weights. For any weight small enough that 1/weight is large, u**(1/
+    weight) underflows to exactly 0.0 in IEEE754 long before the true
+    value is actually zero -- log(0.0) is then -inf, discarding the
+    real (still order-relevant) magnitude entirely and making every
+    sufficiently-low-weight item's key collide at the same -inf,
+    silently destroying the proportional-selection guarantee among
+    them (a low-weight item that should still occasionally win against
+    an even-lower-weight one no longer can, because both keys are now
+    identical -inf).
+    """
+    dt = DTYPES[dtype]
+    u_v = dt(u)
+    w_v = dt(weight)
+    with np.errstate(over="ignore", under="ignore", invalid="ignore", divide="ignore"):
+        key = u_v ** (dt(1.0) / w_v)
+        return float(np.log(key))
+
+
+def stable_weighted_sampling_key(u: float, weight: float, dtype: str) -> float:
+    """The A-ExpJ / wrswoR `sample_int_expj` fix: compute log(u)/weight
+    directly, never materializing u**(1/weight) as an intermediate at
+    all. This is exactly the same log-space trick as this repo's other
+    kernels (logsumexp, kl_divergence) -- do the operation prone to
+    overflow/underflow (here, a power with a huge exponent) in log
+    space via a plain division instead, so the result stays a finite,
+    order-preserving real number all the way down to the smallest
+    weights actually used in practice."""
+    dt = DTYPES[dtype]
+    u_v = dt(u)
+    w_v = dt(weight)
+    with np.errstate(over="ignore", under="ignore", invalid="ignore", divide="ignore"):
+        return float(np.log(u_v) / w_v)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -783,4 +826,5 @@ KERNELS = {
     "hll_register": (naive_hll_register_term, stable_hll_register_term),
     "focal_loss_grad": (naive_focal_loss_grad, stable_focal_loss_grad),
     "pearson_correlation": (naive_pearson_correlation, stable_pearson_correlation),
+    "weighted_sampling_key": (naive_weighted_sampling_key, stable_weighted_sampling_key),
 }

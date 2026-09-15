@@ -379,3 +379,16 @@ def gold_focal_loss_grad(logit: float, target: int, gamma: float, alpha: float) 
     f_plus = focal_loss(ctx.add(x, h))
     f_minus = focal_loss(ctx.subtract(x, h))
     return ctx.divide(ctx.subtract(f_plus, f_minus), ctx.multiply(Decimal(2), h))
+
+
+def gold_weighted_sampling_key(u: float, weight: float) -> Decimal:
+    """log(u**(1/weight)) computed algebraically as (1/weight)*ln(u) in
+    50-digit Decimal arithmetic -- mathematically identical to both
+    naive_weighted_sampling_key and stable_weighted_sampling_key (they
+    differ only in floating-point evaluation ORDER, not in the formula),
+    so this reference is independent of which intermediate a kernel
+    under test chooses to materialize."""
+    ctx = _ctx()
+    u_d = ctx.create_decimal(repr(float(u)))
+    w_d = ctx.create_decimal(repr(float(weight)))
+    return ctx.divide(ctx.ln(u_d), w_d)

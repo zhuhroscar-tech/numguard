@@ -736,3 +736,54 @@ class TestPearsonCorrelationCancellation:
         y = [10.0, 20.0, 30.0, 40.0, 50.0]
         stable = kernels.stable_pearson_correlation(x, y, "float64")
         assert stable == pytest.approx(1.0, abs=1e-9)
+
+
+class TestWeightedSamplingKeyUnderflow:
+    """A-Res-style weighted-reservoir-sampling comparison keys
+    (Efraimidis & Spirakis 2006): computing u**(1/weight) BEFORE taking
+    the log (the paper's own verbatim formula, shipped as R's wrswoR
+    `sample_int_expjs` and explicitly documented there as "at the cost
+    of numerical stability") underflows to exactly 0.0 for small
+    weights, discarding real order-relevant magnitude behind log(0.0)
+    = -inf. The log-space fix (`sample_int_expj`: compute log(u)/weight
+    directly) never materializes the intermediate power at all."""
+
+    def test_naive_underflows_stable_survives_float64(self):
+        naive = kernels.naive_weighted_sampling_key(0.1, 0.001, "float64")
+        stable = kernels.stable_weighted_sampling_key(0.1, 0.001, "float64")
+        assert math.isinf(naive) and naive < 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(-2302.585092994046, rel=1e-9)
+
+    def test_naive_underflows_stable_survives_float32(self):
+        naive = kernels.naive_weighted_sampling_key(0.5, 0.005, "float32")
+        stable = kernels.stable_weighted_sampling_key(0.5, 0.005, "float32")
+        assert math.isinf(naive) and naive < 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(-138.6294361, rel=1e-4)
+
+    def test_naive_underflows_stable_survives_float16(self):
+        naive = kernels.naive_weighted_sampling_key(0.9, 0.005, "float16")
+        stable = kernels.stable_weighted_sampling_key(0.9, 0.005, "float16")
+        assert math.isinf(naive) and naive < 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(-21.0937, rel=1e-2)
+
+    def test_both_agree_on_ordinary_weight(self):
+        # Control: an everyday weight (1.0) never approaches the
+        # underflow boundary, so both formulas should agree closely.
+        naive = kernels.naive_weighted_sampling_key(0.5, 1.0, "float64")
+        stable = kernels.stable_weighted_sampling_key(0.5, 1.0, "float64")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(stable, rel=1e-9)
+        assert stable == pytest.approx(math.log(0.5), rel=1e-9)
+
+    def test_both_agree_just_above_the_underflow_boundary(self):
+        # A weight one order of magnitude away from underflowing at
+        # float64 (0.05 vs the 0.001 fixture above) -- confirms the
+        # bug is conditional on the underflow boundary itself, not
+        # small weights in general.
+        naive = kernels.naive_weighted_sampling_key(0.5, 0.05, "float64")
+        stable = kernels.stable_weighted_sampling_key(0.5, 0.05, "float64")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(stable, rel=1e-6)

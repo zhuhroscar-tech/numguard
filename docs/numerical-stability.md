@@ -587,9 +587,51 @@ constant) returns `NaN` explicitly, matching `scipy`'s current
 identified by `numpy#32446`/`pandas#67023`, rather than an arbitrary
 clipped `+-1`.
 
+## Weighted reservoir-sampling comparison key
+
+**Textbook definition:** Efraimidis & Spirakis's A-Res algorithm
+(2006) does single-pass weighted random sampling without replacement
+from a stream: assign each item a key `u**(1/weight)` (`u` a fresh
+uniform(0,1) draw, `weight` the item's importance/score), keep the `k`
+items with the largest keys seen so far. This is the same algorithm
+grpc's proposal A113 cites for weighted pick-first shuffling and the
+basis for R's `wrswoR` package and Java's LinkedIn/DataSketches-style
+weighted reservoirs.
+
+**Naive formula** (`naive_weighted_sampling_key`): the paper's own
+literal formula, `log(u**(1/weight))`, computed by taking the power
+first and only then a log to put every item's key on one common,
+directly-comparable scale. R's `wrswoR` ships this exact verbatim form
+as `sample_int_expjs`, its own documentation explicitly noting it does
+so "at the cost of numerical stability." For any weight small enough
+that `1/weight` is large -- a realistic long-tail item whose
+score/importance is orders of magnitude below a typical item, exactly
+the regime weighted sampling is meant to still handle fairly --
+`u**(1/weight)` underflows to exactly `0.0` in IEEE754 long before the
+true value is actually zero. `log(0.0)` is then `-inf`, discarding the
+real (still order-relevant) magnitude entirely: every sufficiently
+low-weight item's key collapses onto the identical `-inf`, silently
+destroying the proportional-selection guarantee among them (an item
+that should still occasionally out-rank an even-lower-weight one no
+longer can, because both keys are now indistinguishable).
+
+**Stable formula** (`stable_weighted_sampling_key`): the wrswoR
+package's own `sample_int_expj` fix -- compute `log(u)/weight`
+directly, never materializing `u**(1/weight)` as an intermediate at
+all. This is the exact same log-space substitution already used by
+this repo's `logsumexp`/`kl_divergence` kernels: replace an operation
+prone to overflow/underflow (a power with a huge exponent) with a plain
+division in log space, so the result stays a finite, order-preserving
+real number all the way down to the smallest weights actually used in
+practice. `wrswoR`'s own documentation states this algebraic identity
+directly: "It can be shown that the order statistic of `U^(1/w_i)` has
+the same distribution as random sampling without replacement... To
+increase numerical stability, `log(U)/w_i` is computed instead; the
+log transform does not change the order statistic."
+
 ## Independent ground truth
 
-All thirteen derivations above are cross-checked in this repository
+All sixteen derivations above are cross-checked in this repository
 against an independent implementation (`reference.py`) that uses
 Python's arbitrary-precision `decimal.Decimal` (50 significant digits)
 evaluated directly from the mathematical definitions -- not derived

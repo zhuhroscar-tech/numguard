@@ -29,7 +29,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "(softmax, log-sum-exp, cross-entropy, variance, layer_norm, "
             "rms_norm, kl_divergence, online_softmax, masked_softmax, "
             "sum, rope_cos, int8_add, hll_register, focal_loss_grad, "
-            "pearson_correlation) against an independent high-precision "
+            "pearson_correlation, weighted_sampling_key) against an "
+            "independent high-precision "
             "reference, across "
             "float16/float32/float64, on adversarial fixtures."
         ),

@@ -892,6 +892,94 @@ PEARSON_CORRELATION_FIXTURES = [
 ]
 
 
+WEIGHTED_SAMPLING_KEY_FIXTURES = [
+    Fixture(
+        "everyday_moderate_weight",
+        [0.5],
+        "An ordinary uniform draw against a moderate weight (u=0.5, "
+        "weight=1.0) -- u**(1/weight) stays an ordinary O(1) number "
+        "here, so naive and stable agree closely. Control case showing "
+        "the bug is conditional on weight magnitude, not the key "
+        "formula being wrong in general.",
+        q_values=[1.0],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "small_weight_still_representable",
+        [0.5],
+        "A small-but-not-extreme weight (0.05, e.g. a long-tail item "
+        "whose importance/score is two orders of magnitude below a "
+        "typical item in a recommendation-ranking or load-balancing "
+        "weighted sample) -- 1/weight=20 is large enough that "
+        "u**(1/weight) is already a small number, but still just above "
+        "the point where float32/float64 underflow it to exactly 0.0, "
+        "so naive and stable still agree (to within normal float "
+        "rounding). Confirms the bug is specifically about the "
+        "underflow boundary, not small weights in general.",
+        q_values=[0.05],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "small_weight_underflow_float64",
+        [0.1],
+        "A realistic small weight (0.001 -- a three-orders-of-magnitude "
+        "long-tail item, the kind wrswoR's own docs warn `sample_int_"
+        "expjs` is numerically unsafe for) drives 1/weight=1000, so "
+        "u**(1/weight) = 0.1**1000 underflows to exactly 0.0 even in "
+        "float64. The naive kernel's log(0.0) then reports -inf, "
+        "discarding real magnitude information and colliding every "
+        "similarly-tiny-weight item onto the same -inf key -- exactly "
+        "the failure this kernel exists to catch, per wrswoR's own "
+        "documented distinction between `sample_int_expjs` (verbatim, "
+        "numerically unsafe) and `sample_int_expj` (log-space, safe).",
+        q_values=[0.001],
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "small_weight_underflow_float32",
+        [0.5],
+        "The same underflow shape one dtype down: float32's narrower "
+        "range means a less extreme weight (0.005, giving 1/weight=200) "
+        "is already enough to underflow 0.5**200 to exactly 0.0, "
+        "confirming the bug's severity scales with a dtype's dynamic "
+        "range rather than being a float64-only edge case.",
+        q_values=[0.005],
+        dtypes=("float32",),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "small_weight_underflow_float16",
+        [0.9],
+        "float16's much narrower range means even a fairly ordinary "
+        "small weight (0.005, giving 1/weight=200) is enough to "
+        "underflow 0.9**200 to exactly 0.0 -- the same failure shape "
+        "reproducing at every dtype this repo audits, each needing "
+        "progressively less extreme inputs to trigger as precision "
+        "narrows.",
+        q_values=[0.005],
+        dtypes=("float16",),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "u_near_one_small_weight",
+        [0.999],
+        "Even a uniform draw very close to 1 (u=0.999, the case an "
+        "engineer might assume is 'safe' since u**(1/weight) should "
+        "stay close to 1 for reasonable weights) still underflows once "
+        "the weight is small enough (0.0005, 1/weight=2000): "
+        "0.999**2000 ~= 0.135, which is NOT what actually underflows -- "
+        "included as a near-miss control confirming this specific u is "
+        "still finite at this weight (naive and stable still agree), "
+        "isolating that the failure genuinely requires BOTH a small "
+        "weight AND a u bounded away from 1, not small weight alone.",
+        q_values=[0.0005],
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -908,6 +996,7 @@ FIXTURES_BY_KERNEL = {
     "hll_register": HLL_REGISTER_FIXTURES,
     "focal_loss_grad": FOCAL_LOSS_GRAD_FIXTURES,
     "pearson_correlation": PEARSON_CORRELATION_FIXTURES,
+    "weighted_sampling_key": WEIGHTED_SAMPLING_KEY_FIXTURES,
 }
 
 
