@@ -1004,6 +1004,65 @@ fixture documented above still actually fails, and every stable
 counterpart still actually passes -- proving these are live regression
 tests, not decorative claims.
 
+## Squared Euclidean distance via dot-product expansion
+
+**Textbook/reference definition:** the squared Euclidean distance
+between two vectors, `dist^2(x, y) = sum((x_i - y_i)^2)`, computed
+directly from the elementwise-difference definition.
+
+**Naive formula** (`naive_squared_euclidean_distance`): the algebraic
+expansion `dist^2(x, y) = dot(x,x) - 2*dot(x,y) + dot(y,y)`. This is
+not a strawman -- it is the exact formula documented in
+`sklearn.metrics.pairwise.euclidean_distances`'s own docstring, which
+states plainly: "this is not the most precise way of doing this
+computation, because this equation potentially suffers from
+catastrophic cancellation." The expansion remains common in production
+ANN/vector-search code because `dot(x,x)` and `dot(y,y)` can each be
+precomputed once per vector and reused across every query against it --
+exactly the efficiency tradeoff scikit-learn's own docs describe. When
+`x` and `y` are nearly identical (near-duplicate detection, ANN
+candidate re-ranking, embedding-drift checks) and both sit far from the
+origin (realistic after mean-pooling, positional-embedding bias, or
+un-normalized activations), `dot(x,x)` and `dot(y,y)` are both large
+and nearly equal to `2*dot(x,y)`; subtracting them cancels almost every
+significant digit of the true (small) squared distance. Verified
+directly in this repository's fixtures and test suite, the naive
+formula's rounding noise in the surviving digits can push the float
+result NEGATIVE -- an impossible value for a real sum-of-squares --
+at float16 (`-4.0` exactly, at an offset of only ~50) and at float32
+(`-4096.0` exactly, at an offset of ~1e5). Feeding a negative squared
+distance to `sqrt()` (the natural next step to recover the actual
+Euclidean distance) silently produces NaN with no error or warning.
+scikit-learn's own PR#24542 ("Add a negative zeros and NaNs guard for
+the Euclidean specialisation") added a runtime clamp to its Cython
+pairwise-distance reduction kernels specifically to paper over this --
+independent confirmation from the library's own maintainers that this
+is a real, previously-encountered failure mode, not a hypothetical one.
+
+**Stable formula** (`stable_squared_euclidean_distance`): compute the
+difference vector first, then sum its squares --
+`dist^2(x, y) = sum((x_i - y_i)^2)`, the same "difference-before-
+reduction" principle this repository's `stable_variance` and
+`stable_pearson_correlation` kernels already use. Each term is bounded
+by the actual per-coordinate difference rather than by the vectors'
+absolute scale, so there is nothing large to cancel regardless of how
+far `x` and `y` sit from the origin.
+
+All twenty-four derivations above are cross-checked in this repository
+against an independent implementation (`reference.py`) built entirely
+from Python's arbitrary-precision `decimal.Decimal` type at 50
+significant digits, evaluated directly from each kernel's mathematical
+definition rather than derived from the same numpy code path under
+test (see prior paragraph); `squared_euclidean_distance`'s reference
+(`gold_squared_euclidean_distance`) sums `(x_i - y_i)^2` per-coordinate
+in Decimal arithmetic, matching the stable kernel's formula shape but
+at 50-digit precision rather than the dtype under test, so a bug shared
+between the naive and stable float kernels cannot hide behind comparing
+them only to each other. `numguard --check-naive-fails` (run in CI on
+every push) asserts that every naive fixture documented above still
+actually fails, and every stable counterpart still actually passes --
+proving these are live regression tests, not decorative claims.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

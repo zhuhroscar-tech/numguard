@@ -855,6 +855,118 @@ FOCAL_LOSS_GRAD_FIXTURES = [
 ]
 
 
+SQUARED_EUCLIDEAN_DISTANCE_FIXTURES = [
+    Fixture(
+        "everyday_clean_no_offset",
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        "Small values, no offset -- baseline agreement case showing "
+        "naive dot-product expansion and stable difference-first "
+        "formula agree closely when there is nothing to cancel "
+        "(true squared distance = 2.0).",
+        q_values=[1.5, 2.5, 2.5, 4.5, 4.0],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "modest_offset_float16",
+        [48.53125, 49.96875, 49.6875],
+        "float16's ~3-4 significant decimal digits mean even a modest "
+        "offset of ~50 is enough for the naive dot(x,x)-2*dot(x,y)+"
+        "dot(y,y) expansion to lose the true squared distance (a tiny "
+        "positive value from near-duplicate vectors) to catastrophic "
+        "cancellation, producing a NEGATIVE squared distance (-4.0 "
+        "exactly, verified in this repo's test suite) -- impossible "
+        "for a real sum-of-squares -- while the difference-first "
+        "stable form stays accurate throughout.",
+        q_values=[48.5625, 50.03125, 49.625],
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "large_offset_near_duplicate_float32",
+        [100000.7578125, 99997.90625, 99996.890625, 99996.8671875, 100001.125, 100001.5703125],
+        "Classic catastrophic-cancellation shape for the naive "
+        "expansion (same mechanism scikit-learn's own "
+        "euclidean_distances docstring documents, and which "
+        "scikit-learn PR#24542 added a runtime 'negative zeros and "
+        "NaNs guard' for): two near-duplicate embedding-like vectors "
+        "offset far from the origin -- realistic after mean-pooling "
+        "or un-normalized activations, and exactly the shape of an "
+        "ANN candidate re-ranking or near-duplicate-detection "
+        "comparison. dot(x,x) and dot(y,y) are both ~6e10 while the "
+        "true squared distance is ~0.0067; float32's ~7 significant "
+        "digits cannot represent that gap, and the naive formula "
+        "verified in this repo's test suite goes NEGATIVE (-4096.0 "
+        "exactly). Feeding that negative squared distance to sqrt() "
+        "(to recover the actual Euclidean distance) produces NaN. "
+        "float32-only: float16 overflows this offset outright (a "
+        "different, unrelated failure mode) and float64's ~15-17 "
+        "significant digits absorb the offset without meaningful "
+        "cancellation here.",
+        q_values=[100000.7578125, 99997.859375, 99996.921875, 99996.90625, 100001.171875, 100001.6015625],
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "realistic_768d_embedding_offset_float32",
+        [
+            5002.4967141530112, 4998.617357021748, 5006.476885380727,
+            5015.230298564225, 4997.658466252042, 5007.658630431311,
+            5002.3172812870693, 4997.65262807024, 5015.792128155073,
+            4997.674347291014,
+        ],
+        "10-dim slice of a realistic 768-dim-style embedding: random "
+        "unit-scale values offset by ~5000 (the same order of "
+        "magnitude as un-normalized transformer activations or "
+        "mean-pooled embeddings before normalization) compared "
+        "against a near-duplicate (small Gaussian noise ~1e-3 added) "
+        "-- the exact production shape this kernel targets: ANN "
+        "candidate re-ranking / near-duplicate detection over raw "
+        "(non-unit-normalized) embedding vectors. True squared "
+        "distance is a tiny positive number; naive dot-product "
+        "expansion in float32 collapses it to a value with no "
+        "correct significant digits (verified in this repo's test "
+        "suite), while the stable difference-first form stays "
+        "accurate.",
+        q_values=[
+            5002.500685567191, 4998.614696544178, 5006.478424208745,
+            5015.229640089624, 4997.657624453503, 5007.657535455112,
+            5002.317369520005, 4997.652351568626, 5015.791862806699,
+            4997.674230068475,
+        ],
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "identical_vectors_large_offset_control",
+        [50_000.0, 50_001.0, 50_002.0, 50_003.0, 49_999.0, 50_000.5, 49_998.5, 50_001.5],
+        "Identical vectors (true squared distance exactly 0) at a "
+        "large offset -- both naive and stable formulas correctly "
+        "return 0 here, included as a control to confirm neither "
+        "formula's guard logic corrupts the trivial exact-match case, "
+        "even though this is the same offset scale where the "
+        "near-duplicate fixtures above demonstrate real cancellation "
+        "damage once the vectors differ even slightly. float32/"
+        "float64 only: at this offset, dot(x,x) alone (~2.5e9) "
+        "already overflows float16's ~65504 max range outright -- an "
+        "overflow failure, not the cancellation failure this fixture "
+        "is a control for, so it is excluded here rather than mixing "
+        "failure modes into one fixture's expectation.",
+        q_values=[50_000.0, 50_001.0, 50_002.0, 50_003.0, 49_999.0, 50_000.5, 49_998.5, 50_001.5],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "perfect_disjoint_control",
+        [0.0, 0.0, 0.0],
+        "Simple orthogonal-offset control with no shared origin "
+        "offset and no cancellation risk (true squared distance = "
+        "3.0 exactly, a clean unit-cube diagonal) -- confirms the "
+        "naive formula is also correct on ordinary, well-conditioned "
+        "input, matching the tool-wide convention of pairing every "
+        "adversarial fixture with at least one control.",
+        q_values=[1.0, 1.0, 1.0],
+        expect_naive_ok=True,
+    ),
+]
+
+
 PEARSON_CORRELATION_FIXTURES = [
     Fixture(
         "everyday_clean_correlation",
@@ -1579,6 +1691,7 @@ FIXTURES_BY_KERNEL = {
     "weight_decay": WEIGHT_DECAY_FIXTURES,
     "gradient_accumulation_bias": GRADIENT_ACCUMULATION_BIAS_FIXTURES,
     "longrope_factor_select": LONGROPE_FACTOR_SELECT_FIXTURES,
+    "squared_euclidean_distance": SQUARED_EUCLIDEAN_DISTANCE_FIXTURES,
 }
 
 

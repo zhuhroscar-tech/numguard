@@ -15,6 +15,81 @@ import pytest
 from numguard import kernels, reference
 
 
+class TestSquaredEuclideanDistanceCancellation:
+    """dist^2(x,y) via the naive dot(x,x)-2*dot(x,y)+dot(y,y) expansion
+    hits catastrophic cancellation when x and y are near-duplicate
+    vectors offset far from the origin -- documented directly in
+    scikit-learn's own euclidean_distances docstring ("this equation
+    potentially suffers from catastrophic cancellation") and the
+    reason scikit-learn PR#24542 added a runtime "negative zeros and
+    NaNs guard" to its Cython pairwise-distance kernels. Unlike most
+    cancellation bugs in this repo, the naive result here can go
+    NEGATIVE -- an impossible value for a real sum-of-squares -- which
+    is the strongest possible regression signal these tests pin down
+    exactly."""
+
+    def test_naive_goes_negative_float32_large_offset(self):
+        x = [100000.7578125, 99997.90625, 99996.890625, 99996.8671875, 100001.125, 100001.5703125]
+        y = [100000.7578125, 99997.859375, 99996.921875, 99996.90625, 100001.171875, 100001.6015625]
+        naive = kernels.naive_squared_euclidean_distance(x, y, "float32")
+        stable = kernels.stable_squared_euclidean_distance(x, y, "float32")
+        assert naive < 0, "expected naive expansion to go negative at this offset"
+        assert naive == pytest.approx(-4096.0)
+        assert stable > 0
+        assert stable == pytest.approx(0.0067, abs=2e-3)
+
+    def test_naive_goes_negative_float16_modest_offset(self):
+        x = [48.53125, 49.96875, 49.6875]
+        y = [48.5625, 50.03125, 49.625]
+        naive = kernels.naive_squared_euclidean_distance(x, y, "float16")
+        stable = kernels.stable_squared_euclidean_distance(x, y, "float16")
+        assert naive < 0, "expected naive expansion to go negative at this offset"
+        assert naive == pytest.approx(-4.0)
+        assert stable > 0
+
+    def test_negative_naive_result_produces_nan_under_sqrt(self):
+        # The whole point of this bug class: a squared distance feeds
+        # directly into sqrt() to recover the actual Euclidean
+        # distance in real ANN/nearest-neighbor code. A negative
+        # squared distance silently becomes NaN there (numpy's sqrt,
+        # unlike math.sqrt, returns NaN with a warning rather than
+        # raising -- the actual behavior real vector-search code sees).
+        import numpy as np
+
+        x = [100000.7578125, 99997.90625, 99996.890625, 99996.8671875, 100001.125, 100001.5703125]
+        y = [100000.7578125, 99997.859375, 99996.921875, 99996.90625, 100001.171875, 100001.6015625]
+        naive = kernels.naive_squared_euclidean_distance(x, y, "float32")
+        assert naive < 0
+        with np.errstate(invalid="ignore"):
+            assert math.isnan(float(np.sqrt(naive)))
+
+    def test_both_agree_on_clean_no_offset_input(self):
+        x = [1.0, 2.0, 3.0, 4.0, 5.0]
+        y = [1.5, 2.5, 2.5, 4.5, 4.0]
+        naive = kernels.naive_squared_euclidean_distance(x, y, "float64")
+        stable = kernels.stable_squared_euclidean_distance(x, y, "float64")
+        assert naive == pytest.approx(2.0, rel=1e-9)
+        assert stable == pytest.approx(2.0, rel=1e-9)
+
+    def test_identical_vectors_give_exactly_zero_at_large_offset(self):
+        # Control: no cancellation damage possible when x == y exactly,
+        # even at the same large offset that damages the near-duplicate
+        # fixtures above -- confirms the bug is conditional on x != y,
+        # not an unconditional break at this offset scale.
+        x = [50_000.0, 50_001.0, 50_002.0, 50_003.0]
+        naive = kernels.naive_squared_euclidean_distance(x, x, "float32")
+        stable = kernels.stable_squared_euclidean_distance(x, x, "float32")
+        assert naive == 0.0
+        assert stable == 0.0
+
+    def test_reference_matches_direct_decimal_definition(self):
+        x = [10_001.0, 10_002.0, 10_003.0]
+        y = [10_005.0, 10_003.0, 10_004.0]
+        gold = reference.gold_squared_euclidean_distance(x, y)
+        expected = sum((float(a) - float(b)) ** 2 for a, b in zip(x, y))
+        assert float(gold) == pytest.approx(expected, rel=1e-9)
+
+
 class TestLogSumExpOverflow:
     def test_naive_overflows_stable_does_not(self):
         values = [1000.0, 1001.0, 1002.0]

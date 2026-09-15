@@ -131,6 +131,27 @@ def gold_sum(values: Sequence[float]) -> Decimal:
     return total
 
 
+def gold_squared_euclidean_distance(x_values: Sequence[float], y_values: Sequence[float]) -> Decimal:
+    """sum((x_i - y_i)^2) computed elementwise at 50-digit precision --
+    the textbook squared-Euclidean-distance definition, with no
+    intermediate dot-product expansion. This is the independent ground
+    truth for the naive `dot(x,x) - 2*dot(x,y) + dot(y,y)` expansion
+    that scikit-learn's own euclidean_distances docstring documents as
+    suffering "catastrophic cancellation" (and which scikit-learn PR
+    #24542 added a runtime "negative zeros and NaNs guard" for in its
+    Cython pairwise-distance reduction kernels) -- see this kernel's
+    naive/stable implementations in kernels.py for the full citation.
+    """
+    ctx = _ctx()
+    xs = _to_decimals(x_values)
+    ys = _to_decimals(y_values)
+    total = ctx.create_decimal(0)
+    for x, y in zip(xs, ys):
+        d = ctx.subtract(x, y)
+        total = ctx.add(total, ctx.multiply(d, d))
+    return total
+
+
 def gold_pearson_correlation(x_values: Sequence[float], y_values: Sequence[float]) -> Decimal:
     """Pearson's r = sum((x-mean_x)*(y-mean_y)) / sqrt(sum((x-mean_x)^2) *
     sum((y-mean_y)^2)), from the textbook definition, at 50-digit

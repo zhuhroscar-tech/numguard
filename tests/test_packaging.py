@@ -112,6 +112,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "weight_decay": "AdamW decoupled weight decay storage stall",
         "gradient_accumulation_bias": "Gradient-accumulation loss bias",
         "longrope_factor_select": "LongRoPE short/long scaling-factor selection",
+        "squared_euclidean_distance": "Squared Euclidean distance via dot-product expansion",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

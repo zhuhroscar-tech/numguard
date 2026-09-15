@@ -717,6 +717,57 @@ def stable_focal_loss_grad(logit, target: int, gamma: float, alpha: float, dtype
 # arbitrary clipped +-1.
 
 
+def naive_squared_euclidean_distance(x_values, y_values, dtype: str) -> float:
+    """dist^2(x, y) = dot(x,x) - 2*dot(x,y) + dot(y,y) -- the exact
+    expansion documented in scikit-learn's own
+    sklearn.metrics.pairwise.euclidean_distances docstring as "the most
+    precise way of doing this computation" is explicitly NOT this
+    formula: "this is not the most precise way of doing this
+    computation, because this equation potentially suffers from
+    catastrophic cancellation." Real ANN/vector-search libraries use
+    this expansion because dot(x,x) and dot(y,y) can be precomputed
+    once per vector and reused across every query -- the same
+    efficiency tradeoff sklearn's docstring describes -- so it appears
+    in production embedding-similarity/KNN candidate re-ranking code,
+    not just textbooks. When x and y are nearly identical (near-
+    duplicate detection, ANN candidate re-ranking, embedding drift
+    checks) and both are offset far from the origin (realistic after
+    mean-pooling, positional-embedding bias, or un-normalized
+    activations), dot(x,x) and dot(y,y) are both huge and nearly equal
+    to 2*dot(x,y); subtracting them cancels almost all significant
+    digits, and rounding noise in the surviving digits can push the
+    float result negative -- an impossible value for a real squared
+    distance, and one that immediately produces NaN if fed to sqrt() to
+    recover the actual (non-squared) Euclidean distance. scikit-learn's
+    own PR#24542 added a runtime "negative zeros and NaNs guard" to its
+    Cython pairwise-distance reduction kernels specifically to paper
+    over this at the top of pairwise.py's fast path -- confirming this
+    is a real, previously-patched failure mode, not a hypothetical one.
+    """
+    x = _arr(x_values, dtype)
+    y = _arr(y_values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        return float(np.dot(x, x) - 2.0 * np.dot(x, y) + np.dot(y, y))
+
+
+def stable_squared_euclidean_distance(x_values, y_values, dtype: str) -> float:
+    """Compute the difference vector first, then sum its squares --
+    dist^2(x, y) = sum((x_i - y_i)^2). Each term is bounded by the
+    actual per-coordinate difference rather than by the vectors'
+    absolute scale, so there is nothing large to cancel regardless of
+    how far x and y sit from the origin: this is the same
+    "difference-before-reduction" principle already used by this
+    repo's `stable_variance` and `stable_pearson_correlation` kernels,
+    applied to the squared-distance formula scikit-learn's own docs
+    recommend as more precise than the dot-product expansion above.
+    """
+    x = _arr(x_values, dtype)
+    y = _arr(y_values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        diff = x - y
+        return float(np.dot(diff, diff))
+
+
 def naive_pearson_correlation(x_values, y_values, dtype: str) -> float:
     """(n*sum(xy) - sum(x)*sum(y)) / sqrt((n*sum(x^2)-sum(x)^2) *
     (n*sum(y^2)-sum(y)^2)) -- the literal "sum of products" formula for
@@ -1346,4 +1397,5 @@ KERNELS = {
     "weight_decay": (naive_weight_decay, stable_weight_decay),
     "gradient_accumulation_bias": (naive_gradient_accumulation_bias, stable_gradient_accumulation_bias),
     "longrope_factor_select": (naive_longrope_factor_select, stable_longrope_factor_select),
+    "squared_euclidean_distance": (naive_squared_euclidean_distance, stable_squared_euclidean_distance),
 }

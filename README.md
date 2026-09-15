@@ -218,14 +218,56 @@ a blog post or a framework-internal function you have to trust blindly.
   across multiple accumulation steps, not a single expression's
   numerical behavior or a per-step storage-precision artifact.
 
+- **LongRoPE factor selection** (`longrope_factor_select`): the real,
+  currently-open ggml-org/llama.cpp#24823 bug. Phi-3/Phi-4's LongRoPE
+  scaling keeps two per-dimension frequency-scaling factors
+  (`short_factor` for sequences at or below the model's original
+  trained context, `long_factor` above it); the HF `transformers`
+  reference implementation selects between them using the ACTUAL
+  sequence length being encoded, but llama.cpp selects using the
+  ALLOCATED context size instead, silently mis-scaling `inv_freq` by
+  up to ~30x on the model's own lowest-frequency dimensions whenever a
+  short prompt runs inside a large allocated context window. A
+  different bug class again: which value is selected, not how any one
+  formula is evaluated -- every kernel above this one is a numerical
+  cancellation/overflow/aggregation bug in a fixed formula; this one
+  reproduces identically at every dtype because the defect is entirely
+  in the branch condition.
+
+- **Squared Euclidean distance via dot-product expansion**
+  (`squared_euclidean_distance`): scikit-learn's own
+  `sklearn.metrics.pairwise.euclidean_distances` docstring documents
+  that `dist(x,y) = sqrt(dot(x,x) - 2*dot(x,y) + dot(y,y))` "is not the
+  most precise way of doing this computation, because this equation
+  potentially suffers from catastrophic cancellation" -- and
+  scikit-learn PR#24542 added a runtime "negative zeros and NaNs
+  guard" to its own Cython pairwise-distance kernels for exactly this
+  reason. The expansion is still common in production ANN/vector-
+  search code (dot(x,x) and dot(y,y) can be precomputed once per
+  vector and reused across every query), so it directly affects
+  near-duplicate detection and embedding-similarity re-ranking over
+  raw (non-unit-normalized) embeddings. When two vectors are nearly
+  identical and both offset far from the origin -- realistic after
+  mean-pooling or un-normalized activations -- `dot(x,x)` and
+  `dot(y,y)` are both huge and nearly equal to `2*dot(x,y)`;
+  subtracting them cancels almost every significant digit and can push
+  the float result NEGATIVE, an impossible value for a real squared
+  distance that immediately produces NaN if fed to `sqrt()`. Verified
+  in this repo's fixtures at float16 (-4.0 exactly) and float32
+  (-4096.0 exactly). A different bug class again: cancellation between
+  two independently-large intermediate terms whose difference is the
+  true (small) answer, not an aggregation-order or branch-selection
+  mistake.
+
 ## What this does
 
-For each of twenty-two kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty-four kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
 `geometric_mean`, `p2_quantile`, `repetition_penalty`,
-`speculative_reject`, `weight_decay`, `gradient_accumulation_bias`),
+`speculative_reject`, `weight_decay`, `gradient_accumulation_bias`,
+`longrope_factor_select`, `squared_euclidean_distance`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
 `hll_register` are scored at `float64` only, since they audit integer
 codes/register values rather than a dtype-swept float array), on a
