@@ -1077,6 +1077,96 @@ def stable_repetition_penalty(values, seen_mask, theta: float, dtype):
         return (e / np.sum(e)).astype(DTYPES[dtype])
 
 
+def _bf16_round(x64: np.ndarray) -> np.ndarray:
+    """Round a float64 array to bfloat16 precision (7 explicit mantissa
+    bits, round-to-nearest-even at the truncation boundary), returned
+    widened back to float64. Used only to emulate the fixed hardware
+    compute dtype a real inference stack's draft model would sample
+    from, independent of the audit `dtype` sweep this tool otherwise
+    parameterizes every other kernel by.
+    """
+    x32 = x64.astype(np.float32)
+    as_uint = x32.view(np.uint32)
+    rounded = (as_uint + np.uint32(0x8000)) & np.uint32(0xFFFF0000)
+    return rounded.view(np.float32).astype(np.float64)
+
+
+def _softmax64(x: np.ndarray, dtype: str) -> np.ndarray:
+    m = np.max(x)
+    with np.errstate(over="ignore", invalid="ignore"):
+        e = np.exp((x - m).astype(DTYPES[dtype]))
+        return (e / np.sum(e)).astype(DTYPES[dtype]).astype(np.float64)
+
+
+def _rejection_sample_mix(r: np.ndarray, p: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """The Leviathan/Chen (2023) speculative-decoding rejection-sampling
+    output-distribution identity: given the token was actually sampled
+    from `r`, accepted with probability min(1, q/p) computed against
+    `p`, and on rejection resampled from normalize(max(0, q-p)), the
+    output distribution is r*a + (escaped mass)*resid. This equals `q`
+    exactly (up to floating rounding of the shared array) precisely
+    when r == p -- the entire correctness property this kernel audits.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        a = np.where(p > 0, np.minimum(1.0, q / np.where(p > 0, p, 1.0)), 1.0)
+    resid_raw = np.clip(q - p, 0, None)
+    s = resid_raw.sum()
+    resid = resid_raw / s if s > 0 else np.zeros_like(resid_raw)
+    escape = np.sum(r * (1 - a))
+    return r * a + escape * resid
+
+
+def naive_speculative_reject(values, q_values, dtype):
+    """Speculative-decoding rejection sampling with a real-world
+    precision hazard: the draft token is SAMPLED from the model's
+    native hardware compute-dtype probabilities (bfloat16, the
+    deployed-model storage dtype in practice, modeled here independent
+    of the requested audit `dtype`), but the accept/reject math
+    RECOMPUTES the draft probability at a different (the requested)
+    dtype from the same logits. This is the exact defect class fixed in
+    deepseek-ai/DeepSpec PR#30 ("Draft samples were drawn from
+    native-dtype probabilities while rejection used float32
+    probabilities") and discussed in vllm-project/vllm PR#48641/#53630
+    (every downstream consumer of a rewritten/re-derived logits/probs
+    array inherits an extra, mismatched rounding). `values` holds the
+    draft logits, `q_values` holds the target logits (the naming
+    matches every other two-distribution kernel in this file, e.g.
+    kl_divergence).
+
+    Every individual probability array here is finite and a valid
+    (sums-to-1, non-negative) distribution -- this is NOT an
+    overflow/underflow bug. The bug is purely that the distribution
+    SAMPLED from (r) differs from the distribution the accept/reject
+    identity assumes (p), which silently breaks speculative decoding's
+    core lossless guarantee: the output no longer matches the target
+    model's true distribution q, even though nothing crashes or
+    produces NaN/inf.
+    """
+    xd = _arr(values, dtype).astype(np.float64)
+    xt = _arr(q_values, dtype).astype(np.float64)
+    r_fp64 = _softmax64(xd, "float64")
+    r = _bf16_round(r_fp64)
+    r = r / r.sum()
+    p = _softmax64(xd, dtype)
+    q = _softmax64(xt, dtype)
+    return _rejection_sample_mix(r, p, q).astype(DTYPES[dtype])
+
+
+def stable_speculative_reject(values, q_values, dtype):
+    """The DeepSpec PR#30 fix pattern: materialize the draft-probability
+    array ONCE and reuse the identical array for both the sampling step
+    and the accept/reject math, so r is p by construction (not merely
+    by numerical accident) -- the mismatch naive_speculative_reject
+    introduces cannot occur here regardless of which compute dtype a
+    real deployment happens to sample from.
+    """
+    xd = _arr(values, dtype).astype(np.float64)
+    xt = _arr(q_values, dtype).astype(np.float64)
+    rp = _softmax64(xd, dtype)
+    q = _softmax64(xt, dtype)
+    return _rejection_sample_mix(rp, rp, q).astype(DTYPES[dtype])
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1097,4 +1187,5 @@ KERNELS = {
     "geometric_mean": (naive_geometric_mean, stable_geometric_mean),
     "p2_quantile": (naive_p2_quantile, stable_p2_quantile),
     "repetition_penalty": (naive_repetition_penalty, stable_repetition_penalty),
+    "speculative_reject": (naive_speculative_reject, stable_speculative_reject),
 }

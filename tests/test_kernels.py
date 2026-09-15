@@ -1004,3 +1004,56 @@ class TestRepetitionPenaltyGaugeDependence:
             for n, s, g in zip(naive, stable, gold):
                 assert n == pytest.approx(g, rel=1e-9, abs=1e-12)
                 assert s == pytest.approx(g, rel=1e-9, abs=1e-12)
+
+
+class TestSpeculativeRejectSamplingMismatch:
+    """naive_speculative_reject samples the draft token from one
+    materialization of the draft probability array (bf16-rounded) but
+    computes the Leviathan/Chen accept/reject math against an
+    independently recomputed draft probability array at the requested
+    dtype, from the SAME logits -- the exact defect class fixed in
+    deepseek-ai/DeepSpec PR#30. stable_speculative_reject reuses a
+    single materialized array for both roles, so r is p by
+    construction and the rejection-sampling identity's guarantee
+    (output distribution == target distribution q) holds exactly.
+    """
+
+    DRAFT = [0.5, 1.0, -0.3, 0.2]
+    TARGET = [0.4, 1.1, -0.2, 0.3]
+
+    def test_stable_matches_target_softmax_gold_at_float64(self):
+        gold = [float(g) for g in reference.gold_speculative_reject(self.DRAFT, self.TARGET)]
+        stable = kernels.stable_speculative_reject(self.DRAFT, self.TARGET, "float64").tolist()
+        for s, g in zip(stable, gold):
+            assert s == pytest.approx(g, rel=1e-9, abs=1e-12)
+
+    def test_naive_diverges_from_gold_at_float64(self):
+        # The headline bug: even at float64 (numguard's tightest
+        # tolerance), the sampled-vs-accepted mismatch alone produces a
+        # measurable, tolerance-exceeding divergence from the true
+        # target distribution -- no overflow/underflow/NaN involved,
+        # just a broken correctness identity.
+        gold = [float(g) for g in reference.gold_speculative_reject(self.DRAFT, self.TARGET)]
+        naive = kernels.naive_speculative_reject(self.DRAFT, self.TARGET, "float64").tolist()
+        max_err = max(abs(n - g) for n, g in zip(naive, gold))
+        assert max_err > 1e-5  # far above numguard's float64 atol+rtol floor
+
+    def test_naive_output_is_a_valid_probability_distribution(self):
+        # Confirms this is NOT an overflow/underflow/NaN bug: naive's
+        # output is finite, non-negative, and sums to 1 -- a
+        # well-formed but WRONG distribution, which is exactly the
+        # silent-failure shape that makes this class of bug dangerous
+        # in production (nothing crashes or alarms).
+        naive = kernels.naive_speculative_reject(self.DRAFT, self.TARGET, "float64").tolist()
+        assert all(x >= 0.0 for x in naive)
+        assert sum(naive) == pytest.approx(1.0, rel=1e-9)
+
+    def test_identical_draft_and_target_logits_stable_reproduces_gold(self):
+        # When draft == target exactly, the theorem's guarantee is at
+        # its simplest (r=p=q already, in exact arithmetic) -- confirms
+        # stable's construction doesn't need draft != target to hold.
+        logits = [1.0, 0.5, -0.5, 2.0]
+        gold = [float(g) for g in reference.gold_speculative_reject(logits, logits)]
+        stable = kernels.stable_speculative_reject(logits, logits, "float64").tolist()
+        for s, g in zip(stable, gold):
+            assert s == pytest.approx(g, rel=1e-9, abs=1e-12)

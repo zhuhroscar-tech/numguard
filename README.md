@@ -170,14 +170,33 @@ a blog post or a framework-internal function you have to trust blindly.
   logits happen to sit relative to zero -- not an overflow, underflow,
   or cancellation bug at all, a distinct "wrong invariant" failure
   shape shared only with `hll_register`'s fixed-width-shift bug above.
+- **Speculative-decoding rejection sampling breaks when the sampled-from
+  and accepted-against distributions differ** (`speculative_reject`):
+  the Leviathan/Chen speculative-decoding theorem guarantees the output
+  token distribution equals the target model's true distribution
+  *provided the draft token is sampled from exactly the same
+  distribution used in the accept/reject math*. deepseek-ai/DeepSpec
+  PR#30 fixed a real production bug of exactly this shape ("Draft
+  samples were drawn from native-dtype probabilities while rejection
+  used float32 probabilities"), and vLLM's own rejection-sampler
+  history (PR#48641/#53630) shows how easily an extra materialization
+  of the logits/probabilities array reintroduces this mismatch. Every
+  individual probability array involved is finite and well-formed --
+  there is no NaN, inf, or crash -- yet the sampled output silently
+  stops matching the target model's true distribution, defeating
+  speculative decoding's entire "lossless" guarantee. A different bug
+  class from every kernel above: a correctness identity across TWO
+  probability distributions (draft and target), not a single
+  expression's numerical behavior.
 
 ## What this does
 
-For each of nineteen kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
-`geometric_mean`, `p2_quantile`, `repetition_penalty`),
+`geometric_mean`, `p2_quantile`, `repetition_penalty`,
+`speculative_reject`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
 `hll_register` are scored at `float64` only, since they audit integer
 codes/register values rather than a dtype-swept float array), on a

@@ -568,3 +568,31 @@ def gold_repetition_penalty(values: Sequence[float], seen_mask: Sequence[bool], 
     for e in exps2:
         total2 = ctx.add(total2, e)
     return [ctx.divide(e, total2) for e in exps2]
+
+
+def gold_speculative_reject(values: Sequence[float], q_values: Sequence[float]) -> list:
+    """The MATHEMATICALLY CORRECT output distribution of one speculative-
+    decoding rejection-sampling step: the Leviathan/Chen (2023) theorem
+    guarantees that whenever the draft token is sampled from EXACTLY the
+    same distribution p used in the accept/reject math (a_y=min(1,q_y/p_y),
+    resampling from normalize(max(0,q-p)) on rejection), the resulting
+    output distribution equals the target distribution q exactly -- this
+    is the entire "lossless" guarantee that makes speculative decoding
+    safe to deploy. This reference returns the 50-digit-Decimal softmax
+    of the target logits directly, per that theorem -- deliberately NOT
+    built by replaying either kernel's own r/p/q construction or its
+    accept-reject arithmetic (see module docstring): a bug shared
+    between the kernel under test and this reference (e.g. a wrong
+    resampling formula) could not hide behind comparing them only to
+    each other, since the correct answer here is derived purely from
+    the theorem's statement, independent of any particular r/p
+    articulation.
+
+    `values` holds the draft logits (unused by this reference -- the
+    theorem's guarantee does not depend on what the draft model
+    proposed, only on q), `q_values` holds the target logits, matching
+    every other two-distribution kernel's naming convention in this
+    file (e.g. gold_kl_divergence).
+    """
+    return gold_softmax(q_values)
+

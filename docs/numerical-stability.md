@@ -778,9 +778,63 @@ and sampled decoding apply the raw (gauge-dependent) form -- the same
 codebase already contains both the buggy and the fixed behavior,
 selected only by which decoding strategy happens to be in use.
 
-## Independent ground truth
+## Speculative-decoding rejection sampling
 
-All nineteen derivations above are cross-checked in this repository
+**Textbook definition:** speculative decoding (Leviathan et al. 2023,
+"Fast Inference from Transformers via Speculative Decoding"; Chen et
+al. 2023) accelerates autoregressive LLM decoding by having a small
+draft model propose a token, then verifying it against the (larger)
+target model's distribution with a rejection-sampling rule: sample the
+draft token from distribution `p` (the draft model's probability for
+that token), accept it with probability `a = min(1, q/p)` where `q` is
+the target model's probability for the same token; on rejection,
+resample from the normalized residual `max(0, q - p)`. The theorem's
+entire guarantee -- the property that makes this "lossless" and safe
+to deploy in production inference stacks (vLLM, TensorRT-LLM,
+llama.cpp) -- is that the **output distribution equals the target
+distribution `q` exactly**, provided the draft token is sampled from
+**the same `p`** used in the accept/reject math.
+
+**Naive formula** (`naive_speculative_reject`): sample the draft token
+from one materialization of the draft probability array (`r`), but
+compute the accept/reject math against an **independently recomputed**
+draft probability array (`p`) from the same logits, at a different
+precision. This models a real, documented defect class: the
+speculative-decoding rejection sampler in deepseek-ai/DeepSpec PR#30
+was fixed for exactly this shape -- "Draft samples were drawn from
+native-dtype probabilities while rejection used float32 probabilities
+... Cast logits to float32 before temperature scaling and softmax in
+sample_tokens. Removes a speculative-decoding distribution mismatch."
+The same class of hazard is discussed at length in vLLM's own
+rejection-sampler evolution (PR#48641, reverted, then reintroduced with
+care in PR#53630): removing or reintroducing an extra materialization
+of the logits/probabilities changes which array downstream consumers
+(sampling, verification, and reporting) actually read, and any
+resulting rounding difference between the *sampled-from* and
+*verified-against* arrays reopens this exact correctness gap. This
+repository's kernel emulates the concrete case of a draft model whose
+weights (and therefore its natural sampling distribution) live in
+bfloat16 -- the standard deployed storage dtype -- while the
+accept/reject math recomputes the draft probability at a different
+precision from the same logits: `r != p` even though both are
+individually finite, valid (non-negative, sums-to-1) probability
+vectors. There is no NaN, no inf, no crash anywhere; the entire failure
+is that the rejection-sampling identity's guarantee silently stops
+holding, and the sampled output token distribution measurably diverges
+from the target model's true distribution `q`.
+
+**Stable formula** (`stable_speculative_reject`): materialize the draft
+probability array **once**, and reuse the identical array for both the
+sampling step and the accept/reject math, so `r` is `p` by
+construction rather than merely by numerical accident (the DeepSpec
+PR#30 fix pattern: "That makes the sampled draft distribution match
+the `p` used by rejection sampling."). When `r == p` exactly, the
+output-distribution identity `out = r*a + (escaped mass)*resid`
+collapses to exactly `q` (up to ordinary floating-point rounding of the
+one shared array), regardless of which precision or code path produced
+it.
+
+All twenty derivations above are cross-checked in this repository
 against an independent implementation (`reference.py`) that uses
 Python's arbitrary-precision `decimal.Decimal` (50 significant digits)
 evaluated directly from the mathematical definitions -- not derived

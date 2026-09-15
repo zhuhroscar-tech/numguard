@@ -1227,6 +1227,90 @@ REPETITION_PENALTY_FIXTURES = [
 ]
 
 
+SPECULATIVE_REJECT_FIXTURES = [
+    Fixture(
+        "near_degenerate_draft_control",
+        [10.0, -30.0, -30.0, -30.0],
+        "Control case: draft is nearly a point mass on token 0, and the "
+        "target distribution is close to it (token 1 gets meaningful "
+        "mass, tokens 2-3 negligible). The escaped/residual probability "
+        "mass needed to correct r toward q is tiny here, so even a "
+        "sampled-vs-accepted-distribution mismatch (naive's bf16-vs-"
+        "dtype recompute) stays within tolerance at every dtype -- "
+        "confirms the bug's magnitude scales with how much correction "
+        "speculative rejection sampling actually needs to do, not a "
+        "blanket always-broken claim.",
+        q_values=[10.0, 9.0, -30.0, -30.0],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float16_tolerance_masks_mismatch",
+        [0.5, 1.0, -0.3, 0.2],
+        "The SAME draft/target pair as everyday_close_draft_target "
+        "below, restricted to float16 only: float16's coarse tolerance "
+        "(atol=1e-2) is wide enough to hide the sampled-vs-accepted "
+        "distribution mismatch -- this fixture documents that the bug "
+        "is real but invisible at float16 precision, not that float16 "
+        "somehow fixes it (naive_speculative_reject performs the "
+        "identical wrong computation at every dtype; only the scoring "
+        "tolerance differs).",
+        q_values=[0.4, 1.1, -0.2, 0.3],
+        dtypes=("float16",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "everyday_close_draft_target",
+        [0.5, 1.0, -0.3, 0.2],
+        "Ordinary, closely-matched draft and target logit vectors -- "
+        "not an extreme/adversarial input by any other kernel's "
+        "standard. naive_speculative_reject samples the draft token "
+        "from a bfloat16-rounded probability array (r) but computes "
+        "the Leviathan/Chen accept/reject math against an independently "
+        "recomputed probability array at the requested dtype (p) from "
+        "the SAME logits -- the exact defect class fixed in "
+        "deepseek-ai/DeepSpec PR#30. Both r and p are individually "
+        "finite, valid distributions; the bug is purely that r != p, "
+        "which breaks the rejection-sampling identity's guarantee that "
+        "the output distribution equals the target q. At float32/"
+        "float64 this produces a real, tolerance-exceeding divergence "
+        "from q -- speculative decoding's core 'lossless' promise "
+        "silently fails to hold, with no crash, NaN, or inf anywhere.",
+        q_values=[0.4, 1.1, -0.2, 0.3],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "dominant_low_prob_channel",
+        [3.0, -25.0, 2.0, 1.0],
+        "The draft model is highly confident in token 0 and gives "
+        "token 1 a vanishingly small probability, but the target model "
+        "assigns token 1 real, non-negligible mass -- exactly the "
+        "'draft disagrees on a specific token' shape rejection sampling "
+        "exists to correct. The naive sampled-vs-accepted mismatch "
+        "compounds with this large per-token correction, producing a "
+        "materially larger tolerance-exceeding divergence than the "
+        "everyday_close fixture above at the same dtypes.",
+        q_values=[3.0, 4.0, 2.0, 1.0],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "tiny_residual_mass",
+        [1.0, 2.0, 0.5, -1.0],
+        "Draft and target logits differ by only a small perturbation "
+        "(~0.02-0.05 per position) -- deliberately the OPPOSITE extreme "
+        "from dominant_low_prob_channel, to confirm the bug is not an "
+        "artifact of large draft/target disagreement: even when almost "
+        "no rejection-sampling correction is mathematically needed, "
+        "naive's r!=p sampling/accept-math mismatch alone is enough to "
+        "push the output outside tolerance at float32/float64.",
+        q_values=[1.02, 1.98, 0.55, -0.95],
+        dtypes=("float32", "float64"),
+        expect_naive_ok=False,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -1247,6 +1331,7 @@ FIXTURES_BY_KERNEL = {
     "geometric_mean": GEOMETRIC_MEAN_FIXTURES,
     "p2_quantile": P2_QUANTILE_FIXTURES,
     "repetition_penalty": REPETITION_PENALTY_FIXTURES,
+    "speculative_reject": SPECULATIVE_REJECT_FIXTURES,
 }
 
 
