@@ -1265,6 +1265,63 @@ def stable_gradient_accumulation_bias(values, q_values, dtype: str) -> float:
         return float(dt(np.sum(g)) / dt(np.sum(n)))
 
 
+def naive_longrope_factor_select(
+    values, base_inv_freq, short_factor, long_factor,
+    original_max_pos, seq_len, ctx_alloc, dtype,
+):
+    """Real, currently-unfixed bug: ggml-org/llama.cpp#24823 ("Phi-3 /
+    Phi-4 LongRoPE: short sequences silently use long-context RoPE
+    factors when the allocated context exceeds
+    original_max_position_embeddings"). Phi-3/Phi-4's 'longrope'
+    rope_type keeps two per-dimension scaling factors -- `short_factor`
+    for sequences at or below `original_max_position_embeddings`,
+    `long_factor` above it (real values from the published
+    microsoft/Phi-3-mini-128k-instruct config.json: original_max_
+    position_embeddings=4096, head_dim=96). The reference HF
+    transformers implementation (modeling_rope_utils.
+    _compute_longrope_parameters) selects the factor from the ACTUAL
+    sequence length being encoded. llama.cpp instead selects it from
+    the ALLOCATED context size (n_ctx_seq) -- so loading a model with
+    a large context window and then serving a short document (the
+    issue's own repro: a ~640-token document under `-c 8192`) silently
+    encodes every position with the long-context factor the model was
+    never trained to use at that length, changing inv_freq by up to
+    ~30x on the lowest-frequency dimensions. The bug is entirely about
+    *which* factor is selected, not float rounding, so it reproduces
+    identically at every dtype swept here; still parameterized by
+    dtype like every other kernel for interface consistency and so a
+    future dtype-dependent regression would still be caught.
+    """
+    factor = long_factor if ctx_alloc > original_max_pos else short_factor
+    dt = DTYPES[dtype]
+    inv_freq = dt(base_inv_freq) / dt(factor)
+    positions = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        angle = (positions * inv_freq).astype(dt)
+        return np.cos(angle).astype(dt)
+
+
+def stable_longrope_factor_select(
+    values, base_inv_freq, short_factor, long_factor,
+    original_max_pos, seq_len, ctx_alloc, dtype,
+):
+    """The fix already correct in HF transformers
+    (modeling_rope_utils._compute_longrope_parameters) and the mitigation
+    llama.cpp#24823 itself proposes: select the scaling factor from the
+    ACTUAL sequence length being encoded, never from the allocated
+    context size -- a short document stays on the short-context factor
+    no matter how large a KV-cache/context window the session allocated
+    for it.
+    """
+    factor = long_factor if seq_len > original_max_pos else short_factor
+    dt = DTYPES[dtype]
+    inv_freq = dt(base_inv_freq) / dt(factor)
+    positions = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        angle = (positions * inv_freq).astype(dt)
+        return np.cos(angle).astype(dt)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1288,4 +1345,5 @@ KERNELS = {
     "speculative_reject": (naive_speculative_reject, stable_speculative_reject),
     "weight_decay": (naive_weight_decay, stable_weight_decay),
     "gradient_accumulation_bias": (naive_gradient_accumulation_bias, stable_gradient_accumulation_bias),
+    "longrope_factor_select": (naive_longrope_factor_select, stable_longrope_factor_select),
 }

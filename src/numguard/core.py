@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -185,6 +185,17 @@ def _gold_speculative_reject(fixture: Fixture) -> list:
     return reference.gold_speculative_reject(fixture.values, fixture.q_values)
 
 
+def _gold_longrope_factor_select(fixture: Fixture) -> list:
+    return reference.gold_longrope_factor_select(
+        fixture.values,
+        fixture.lr_base_inv_freq,
+        fixture.lr_short_factor,
+        fixture.lr_long_factor,
+        fixture.lr_original_max_pos,
+        fixture.lr_seq_len,
+    )
+
+
 # Kernels whose naive/stable implementations take extra positional
 # arguments beyond (values, dtype) -- masked_softmax additionally takes
 # the boolean keep-mask. Every other array-valued kernel takes exactly
@@ -195,6 +206,14 @@ EXTRA_ARGS = {
     "rope_cos": lambda fixture: (fixture.freq,),
     "repetition_penalty": lambda fixture: (fixture.mask, fixture.rp_theta),
     "speculative_reject": lambda fixture: (fixture.q_values,),
+    "longrope_factor_select": lambda fixture: (
+        fixture.lr_base_inv_freq,
+        fixture.lr_short_factor,
+        fixture.lr_long_factor,
+        fixture.lr_original_max_pos,
+        fixture.lr_seq_len,
+        fixture.lr_ctx_alloc,
+    ),
 }
 
 
@@ -214,6 +233,7 @@ ARRAY_VALUED_GOLD = {
     "rope_cos": _gold_rope_cos,
     "repetition_penalty": _gold_repetition_penalty,
     "speculative_reject": _gold_speculative_reject,
+    "longrope_factor_select": _gold_longrope_factor_select,
 }
 
 

@@ -32,7 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "pearson_correlation, weighted_sampling_key, "
             "geometric_mean, p2_quantile, repetition_penalty, "
             "speculative_reject, weight_decay, "
-            "gradient_accumulation_bias) against "
+            "gradient_accumulation_bias, longrope_factor_select) against "
             "an independent "
             "high-precision reference, across "
             "float16/float32/float64, on adversarial fixtures."

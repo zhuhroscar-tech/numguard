@@ -89,6 +89,24 @@ class Fixture:
     # type) holds the constant per-step decay fraction. None for every
     # other kernel.
     wd_num_steps: Optional[int] = None
+    # LongRoPE factor-selection parameters, used only by
+    # longrope_factor_select fixtures -- `values` holds the position
+    # ids to encode, and these six fields carry the real published
+    # microsoft/Phi-3-mini-128k-instruct config.json shape: the base
+    # (unscaled) inverse frequency for one representative head
+    # dimension, the model's `short_factor`/`long_factor` scaling
+    # values for that same dimension, the model's
+    # `original_max_position_embeddings`, and the ACTUAL sequence
+    # length of the request being encoded (as opposed to the
+    # allocated context size, which the naive kernel wrongly keys off
+    # instead -- see ggml-org/llama.cpp#24823). None for every other
+    # kernel.
+    lr_base_inv_freq: Optional[float] = None
+    lr_short_factor: Optional[float] = None
+    lr_long_factor: Optional[float] = None
+    lr_original_max_pos: Optional[int] = None
+    lr_seq_len: Optional[int] = None
+    lr_ctx_alloc: Optional[int] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -1446,6 +1464,97 @@ GRADIENT_ACCUMULATION_BIAS_FIXTURES = [
 ]
 
 
+LONGROPE_FACTOR_SELECT_FIXTURES = [
+    Fixture(
+        "short_doc_under_large_allocated_context",
+        [0.0, 100.0, 320.0, 639.0],
+        "The exact ggml-org/llama.cpp#24823 repro shape: a real "
+        "microsoft/Phi-3-mini-128k-instruct dimension (head_dim=96, "
+        "index 30 of 48 -- one of the lowest-frequency, largest "
+        "long_factor/short_factor-ratio dimensions in the model's "
+        "published rope_scaling table) encoding positions from a "
+        "~640-token document (matching the issue's own repro size) "
+        "while the serving session has allocated an 8192-token "
+        "context window. The correct HF transformers reference "
+        "(modeling_rope_utils._compute_longrope_parameters) selects "
+        "the factor from the ACTUAL sequence length (640 <= "
+        "original_max_position_embeddings=4096, so short_factor "
+        "applies). naive_longrope_factor_select reproduces llama.cpp's "
+        "documented bug of selecting from the ALLOCATED context size "
+        "instead (8192 > 4096, so it wrongly picks long_factor), "
+        "silently re-scaling inv_freq by short_factor/long_factor "
+        "=2.05/60.89 (~30x) on this dimension -- the same magnitude "
+        "the issue reports causing catastrophic degradation on "
+        "factor-sensitive fine-tunes.",
+        q_values=None,
+        lr_base_inv_freq=0.003162277660168379,
+        lr_short_factor=2.0500000000000007,
+        lr_long_factor=60.887386322021484,
+        lr_original_max_pos=4096,
+        lr_seq_len=640,
+        lr_ctx_alloc=8192,
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "short_doc_moderate_dimension",
+        [0.0, 100.0, 320.0, 639.0],
+        "Same short-document-under-large-allocated-context scenario, "
+        "but at a moderate-ratio dimension (index 17 of 48, "
+        "long_factor/short_factor ~9.9x rather than dim 30's ~30x) -- "
+        "confirms the bug's magnitude scales with how extreme the "
+        "model's own published per-dimension factor ratio is, not "
+        "merely whether the wrong factor set was picked at all.",
+        q_values=None,
+        lr_base_inv_freq=0.038311868495572866,
+        lr_short_factor=2.000000000000001,
+        lr_long_factor=19.809999465942383,
+        lr_original_max_pos=4096,
+        lr_seq_len=640,
+        lr_ctx_alloc=8192,
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "both_short_context_control",
+        [0.0, 100.0, 320.0, 639.0],
+        "Control: allocated context (2048) is also below "
+        "original_max_position_embeddings (4096), so both the "
+        "actual-seq_len selection (correct) and the allocated-ctx "
+        "selection (buggy) agree on short_factor -- no divergence. "
+        "Shows the bug is specifically about the short/long BOUNDARY "
+        "being crossed by allocation-but-not-content, not about the "
+        "formula disagreeing in general.",
+        q_values=None,
+        lr_base_inv_freq=0.003162277660168379,
+        lr_short_factor=2.0500000000000007,
+        lr_long_factor=60.887386322021484,
+        lr_original_max_pos=4096,
+        lr_seq_len=640,
+        lr_ctx_alloc=2048,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "both_long_context_control",
+        [0.0, 1000.0, 3000.0, 5000.0],
+        "Control: the document itself is genuinely long (5000 "
+        "positions, seq_len > original_max_position_embeddings) AND "
+        "the allocated context (8192) is also long, so both "
+        "selections agree on long_factor -- no divergence. This is "
+        "the ordinary, intended long-context case the LongRoPE factor "
+        "was designed for; the bug only appears when allocation and "
+        "actual content length disagree about which side of the "
+        "boundary they're on.",
+        q_values=None,
+        lr_base_inv_freq=0.003162277660168379,
+        lr_short_factor=2.0500000000000007,
+        lr_long_factor=60.887386322021484,
+        lr_original_max_pos=4096,
+        lr_seq_len=5000,
+        lr_ctx_alloc=8192,
+        expect_naive_ok=True,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -1469,6 +1578,7 @@ FIXTURES_BY_KERNEL = {
     "speculative_reject": SPECULATIVE_REJECT_FIXTURES,
     "weight_decay": WEIGHT_DECAY_FIXTURES,
     "gradient_accumulation_bias": GRADIENT_ACCUMULATION_BIAS_FIXTURES,
+    "longrope_factor_select": LONGROPE_FACTOR_SELECT_FIXTURES,
 }
 
 

@@ -111,6 +111,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "speculative_reject": "Speculative-decoding rejection sampling",
         "weight_decay": "AdamW decoupled weight decay storage stall",
         "gradient_accumulation_bias": "Gradient-accumulation loss bias",
+        "longrope_factor_select": "LongRoPE short/long scaling-factor selection",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

@@ -1203,3 +1203,97 @@ class TestGradientAccumulationBias:
         assert naive_err / float(gold) > moderate_relerr
         assert stable == pytest.approx(float(gold), rel=1e-4, abs=1e-5)
 
+
+class TestLongRopeFactorSelect:
+    """Real, currently-open bug: ggml-org/llama.cpp#24823 ("Phi-3 /
+    Phi-4 LongRoPE: short sequences silently use long-context RoPE
+    factors when the allocated context exceeds
+    original_max_position_embeddings"). The reference HF transformers
+    selection rule (modeling_rope_utils._compute_longrope_parameters)
+    picks `long_factor` vs `short_factor` from the ACTUAL sequence
+    length; naive_longrope_factor_select reproduces llama.cpp's bug of
+    picking from the ALLOCATED context size instead. Uses the real
+    published microsoft/Phi-3-mini-128k-instruct config.json shape
+    (original_max_position_embeddings=4096, head_dim=96).
+    """
+
+    BASE_INV_FREQ = 0.003162277660168379  # dim index 30 of 48
+    SHORT_FACTOR = 2.0500000000000007
+    LONG_FACTOR = 60.887386322021484
+    ORIGINAL_MAX_POS = 4096
+
+    def test_naive_matches_stable_when_both_select_short_control(self):
+        # Control: allocated context (2048) and actual seq_len (640)
+        # are both <= original_max_position_embeddings, so both the
+        # buggy (alloc-based) and correct (seq_len-based) selections
+        # agree on short_factor -- no divergence.
+        positions = [0.0, 100.0, 320.0, 639.0]
+        gold = reference.gold_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=640,
+        )
+        naive = kernels.naive_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=640,
+            ctx_alloc=2048, dtype="float64",
+        )
+        stable = kernels.stable_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=640,
+            ctx_alloc=2048, dtype="float64",
+        )
+        for n, s, g in zip(naive, stable, gold):
+            assert float(n) == pytest.approx(float(g), rel=1e-9, abs=1e-10)
+            assert float(s) == pytest.approx(float(g), rel=1e-9, abs=1e-10)
+
+    def test_naive_diverges_stable_matches_short_doc_large_context(self):
+        # The exact ggml-org/llama.cpp#24823 repro shape: a short
+        # (~640-position) document served under an 8192-token
+        # allocated context. Correct selection (by seq_len) picks
+        # short_factor; naive (by allocated context) wrongly picks
+        # long_factor, a ~30x inv_freq change on this dimension --
+        # comfortably outside numguard's float64 tolerance.
+        positions = [0.0, 100.0, 320.0, 639.0]
+        gold = reference.gold_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=640,
+        )
+        naive = kernels.naive_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=640,
+            ctx_alloc=8192, dtype="float64",
+        )
+        stable = kernels.stable_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=640,
+            ctx_alloc=8192, dtype="float64",
+        )
+        max_naive_err = max(abs(float(n) - float(g)) for n, g in zip(naive, gold))
+        assert max_naive_err > 0.3  # cos values live in [-1, 1]; measured ~0.447
+        for s, g in zip(stable, gold):
+            assert float(s) == pytest.approx(float(g), rel=1e-9, abs=1e-10)
+
+    def test_naive_matches_stable_when_both_select_long_control(self):
+        # Control: a genuinely long document (seq_len=5000) served
+        # under a long allocated context (8192) -- both selections
+        # agree on long_factor, the ordinary intended long-context
+        # case. No divergence.
+        positions = [0.0, 1000.0, 3000.0, 5000.0]
+        gold = reference.gold_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=5000,
+        )
+        naive = kernels.naive_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=5000,
+            ctx_alloc=8192, dtype="float64",
+        )
+        stable = kernels.stable_longrope_factor_select(
+            positions, self.BASE_INV_FREQ, self.SHORT_FACTOR,
+            self.LONG_FACTOR, self.ORIGINAL_MAX_POS, seq_len=5000,
+            ctx_alloc=8192, dtype="float64",
+        )
+        for n, s, g in zip(naive, stable, gold):
+            assert float(n) == pytest.approx(float(g), rel=1e-9, abs=1e-10)
+            assert float(s) == pytest.approx(float(g), rel=1e-9, abs=1e-10)
+

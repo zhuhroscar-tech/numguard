@@ -952,6 +952,58 @@ fixture documented above still actually fails, and every stable
 counterpart still actually passes -- proving these are live regression
 tests, not decorative claims.
 
+## LongRoPE short/long scaling-factor selection
+
+**Textbook/reference definition:** Phi-3 and Phi-4's `"longrope"` RoPE
+variant (HF transformers `modeling_rope_utils._compute_longrope_
+parameters`) keeps two published per-dimension scaling factor tables,
+`short_factor` and `long_factor` (real values, from
+`microsoft/Phi-3-mini-128k-instruct`'s own `config.json`:
+`original_max_position_embeddings=4096`, `head_dim=96`, 48 per-
+dimension factors each). The reference implementation selects
+`long_factor` when the **actual sequence length being encoded**
+exceeds `original_max_position_embeddings`, and `short_factor`
+otherwise -- the model was fine-tuned expecting exactly this rule, and
+mixing up the two factor sets changes the effective RoPE inverse
+frequency (`base_inv_freq / factor`) by up to ~30x on the
+lowest-frequency dimensions of this real model's own published table.
+
+**Naive formula** (`naive_longrope_factor_select`): select the factor
+set from the **allocated context size** (`n_ctx_alloc`, i.e. how large
+a KV-cache/context window the serving session was configured with)
+instead of the actual sequence length -- the real, currently-open bug
+documented in `ggml-org/llama.cpp#24823` ("Phi-3 / Phi-4 LongRoPE:
+short sequences silently use long-context RoPE factors when the
+allocated context exceeds original_max_position_embeddings"). The
+issue's own repro is exactly this shape: a llama.cpp server loaded with
+`-c 8192` (context > 4096) silently encodes every request with
+`long_factor`, even a short ~640-token document that HF transformers
+(and llama.cpp itself, when loaded with `-c 4096`) correctly encodes
+with `short_factor`. The divergence is silent -- no error, no warning,
+and (as the issue documents) model-dependent in severity, which is
+exactly what makes it easy to misattribute to the model or fine-tune
+rather than to the serving path.
+
+**Stable formula** (`stable_longrope_factor_select`): select the
+factor set from the actual sequence length being encoded, matching the
+correct HF transformers reference and the mitigation the issue itself
+proposes -- a short document stays on `short_factor` no matter how
+large a context window the session happens to have allocated for it.
+
+All twenty-three derivations above are cross-checked in this
+repository against an independent implementation (`reference.py`) ...
+(see prior paragraph); `longrope_factor_select`'s reference
+(`gold_longrope_factor_select`) is built the same way as `rope_cos`'s
+-- the from-scratch Decimal `_decimal_cos` Taylor series, not
+`math.cos` -- with the added independent factor-selection rule applied
+directly from the actual-sequence-length definition, so a bug shared
+between the naive and stable kernels in *which* factor gets selected
+cannot hide behind comparing them only to each other. `numguard
+--check-naive-fails` (run in CI on every push) asserts that every naive
+fixture documented above still actually fails, and every stable
+counterpart still actually passes -- proving these are live regression
+tests, not decorative claims.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

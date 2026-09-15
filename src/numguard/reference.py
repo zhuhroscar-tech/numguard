@@ -629,3 +629,37 @@ def gold_speculative_reject(values: Sequence[float], q_values: Sequence[float]) 
     """
     return gold_softmax(q_values)
 
+
+def gold_longrope_factor_select(
+    positions: Sequence[float],
+    base_inv_freq: float,
+    short_factor: float,
+    long_factor: float,
+    original_max_pos: int,
+    seq_len: int,
+) -> list:
+    """cos(position * inv_freq) at 50-digit precision, where inv_freq is
+    base_inv_freq scaled by whichever of {short_factor, long_factor} the
+    HF transformers reference definition selects: long_factor when the
+    ACTUAL sequence length exceeds original_max_position_embeddings,
+    short_factor otherwise (modeling_rope_utils._compute_longrope_
+    parameters -- this is the CORRECT, sequence-length-driven selection
+    that ggml-org/llama.cpp#24823 documents llama.cpp getting wrong by
+    keying off the allocated context size instead). Built from the
+    textbook RoPE angle definition via the from-scratch Decimal
+    `_decimal_cos` above, exactly mirroring gold_rope_cos's independence
+    guarantee: the naive/stable kernels under test differ only in which
+    factor's inv_freq they select, never in the angle/cos formula
+    itself, so this reference is the correct independent ground truth
+    for the SELECTION, not merely the arithmetic.
+    """
+    ctx = _ctx()
+    factor = long_factor if seq_len > original_max_pos else short_factor
+    inv_freq_d = ctx.divide(
+        ctx.create_decimal(repr(float(base_inv_freq))),
+        ctx.create_decimal(repr(float(factor))),
+    )
+    xs = _to_decimals(positions)
+    return [_decimal_cos(ctx.multiply(x, inv_freq_d), ctx) for x in xs]
+
+
