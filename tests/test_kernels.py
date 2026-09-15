@@ -1057,3 +1057,90 @@ class TestSpeculativeRejectSamplingMismatch:
         stable = kernels.stable_speculative_reject(logits, logits, "float64").tolist()
         for s, g in zip(stable, gold):
             assert s == pytest.approx(g, rel=1e-9, abs=1e-12)
+
+
+class TestWeightDecayStorageStall:
+    """naive_weight_decay rounds the decayed parameter back to the
+    storage dtype after EVERY step; once the per-step decay fraction
+    (lr * weight_decay) is smaller than that dtype's unit-in-the-last-
+    place, every update rounds away to the SAME stored value and
+    weight decay silently does nothing for the entire run -- the real,
+    currently-open Nerogar/OneTrainer#996 bug ("No weight decay with
+    Adam, bf16 and stochastic rounding"). stable_weight_decay keeps a
+    float64 master accumulator through the whole loop and rounds to
+    the storage dtype only once, at read-out, so it tracks the true
+    geometric decay regardless of how small the per-step fraction is
+    relative to the storage dtype's precision.
+    """
+
+    W0 = 1.0
+    # Typical AdamW hyperparameters: lr=1e-4, weight_decay=0.01.
+    DECAY_PER_STEP = 1e-6
+
+    def test_naive_total_stall_at_float16(self):
+        # 80000 steps is enough for the true (Decimal-exact) decay to
+        # reach ~7.7%, comfortably outside numguard's float16
+        # atol(1e-2)+rtol(5e-2) tolerance -- but naive_weight_decay's
+        # per-step float16 rounding stalls completely: the parameter
+        # never moves off its initial value.
+        naive = kernels.naive_weight_decay(
+            [self.W0], [self.DECAY_PER_STEP], 80000, "float16"
+        )
+        assert naive == self.W0  # completely unchanged: the stall
+
+    def test_stable_tracks_true_decay_at_float16(self):
+        gold = reference.gold_weight_decay([self.W0], [self.DECAY_PER_STEP], 80000)
+        stable = kernels.stable_weight_decay(
+            [self.W0], [self.DECAY_PER_STEP], 80000, "float16"
+        )
+        assert stable == pytest.approx(float(gold), rel=5e-2, abs=1e-2)
+        assert stable != self.W0  # actually decayed, unlike naive
+
+    def test_naive_drifts_beyond_tolerance_at_float32(self):
+        # At float32, the per-step rounding does NOT fully stall (its
+        # ULP near 1.0 is smaller than the 1e-6 decay fraction), but
+        # the naive per-step-rounded loop still drifts materially
+        # further from the true trajectory than the stable form,
+        # exceeding numguard's tight float32 tolerance (atol=1e-5,
+        # rtol=1e-4).
+        gold = reference.gold_weight_decay([self.W0], [self.DECAY_PER_STEP], 20000)
+        naive = kernels.naive_weight_decay(
+            [self.W0], [self.DECAY_PER_STEP], 20000, "float32"
+        )
+        err = abs(naive - float(gold))
+        assert err > 1e-5 + 1e-4 * abs(float(gold))
+
+    def test_stable_matches_gold_closely_at_float32(self):
+        gold = reference.gold_weight_decay([self.W0], [self.DECAY_PER_STEP], 20000)
+        stable = kernels.stable_weight_decay(
+            [self.W0], [self.DECAY_PER_STEP], 20000, "float32"
+        )
+        assert stable == pytest.approx(float(gold), rel=1e-4, abs=1e-5)
+
+    def test_small_step_count_control_case_both_agree(self):
+        # A genuine control case (few steps, large decay fraction
+        # relative to precision): both formulations should track the
+        # closed-form reference closely, confirming the bug requires
+        # the specific sub-ULP-decay-fraction condition, not merely
+        # "any weight decay at all".
+        gold = reference.gold_weight_decay([self.W0], [0.05], 10)
+        naive = kernels.naive_weight_decay([self.W0], [0.05], 10, "float16")
+        stable = kernels.stable_weight_decay([self.W0], [0.05], 10, "float16")
+        assert naive == pytest.approx(float(gold), rel=5e-2, abs=1e-2)
+        assert stable == pytest.approx(float(gold), rel=5e-2, abs=1e-2)
+
+    def test_gold_matches_naive_geometric_decay_at_float64_no_rounding(self):
+        # At float64 (negligible rounding relative to this magnitude
+        # and step count), naive and stable and the Decimal gold
+        # reference should all agree closely -- confirms the bug is
+        # purely a storage-precision artifact, not a formula error.
+        gold = reference.gold_weight_decay([self.W0], [self.DECAY_PER_STEP], 2000)
+        naive = kernels.naive_weight_decay(
+            [self.W0], [self.DECAY_PER_STEP], 2000, "float64"
+        )
+        stable = kernels.stable_weight_decay(
+            [self.W0], [self.DECAY_PER_STEP], 2000, "float64"
+        )
+        assert naive == pytest.approx(float(gold), rel=1e-9, abs=1e-10)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-10)
+

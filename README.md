@@ -189,14 +189,29 @@ a blog post or a framework-internal function you have to trust blindly.
   probability distributions (draft and target), not a single
   expression's numerical behavior.
 
+- **AdamW decoupled weight decay** (`weight_decay`): the naive
+  formula multiplies the parameter by `(1 - lr*weight_decay)` and
+  writes the result straight back into the parameter's own storage
+  dtype at *every* optimizer step -- exactly what happens when the
+  trained parameter tensor itself (not a separate float32 master copy)
+  is bf16/float16. This is the real, currently-open production bug in
+  Nerogar/OneTrainer#996 ("No weight decay with Adam, bf16 and
+  stochastic rounding"): once the per-step decay fraction
+  `lr*weight_decay` is smaller than the storage dtype's precision at
+  that magnitude, every update rounds away to the identical stored
+  value and weight decay silently does *nothing* for the entire
+  training run, with no error, warning, or crash. A different bug
+  class again: a total silent stall from repeated intermediate
+  rounding, not a formula or cross-distribution mismatch.
+
 ## What this does
 
-For each of twenty kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty-one kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
 `geometric_mean`, `p2_quantile`, `repetition_penalty`,
-`speculative_reject`),
+`speculative_reject`, `weight_decay`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
 `hll_register` are scored at `float64` only, since they audit integer
 codes/register values rather than a dtype-swept float array), on a

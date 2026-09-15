@@ -1167,6 +1167,63 @@ def stable_speculative_reject(values, q_values, dtype):
     return _rejection_sample_mix(rp, rp, q).astype(DTYPES[dtype])
 
 
+def naive_weight_decay(values, q_values, num_steps: int, dtype: str):
+    """Real, currently-open production bug: Nerogar/OneTrainer#996
+    ("No weight decay with Adam, bf16 and stochastic rounding" -- filed
+    2025-09-13, still open). AdamW's decoupled weight decay multiplies
+    the parameter by (1 - lr*wd) and writes the result straight back
+    into the parameter's storage dtype every step. When that storage
+    dtype is bf16 (or, as modeled here via the audited `dtype` sweep,
+    any format whose unit-in-the-last-place exceeds the per-step decay
+    fraction lr*wd), the update rounds away to the SAME stored value
+    every single step -- not a one-off rounding error, a total, silent
+    stall: weight decay is configured, runs without error or warning,
+    and does precisely nothing for the entire run. This is the same
+    "quantized-EMA-state stalling" mechanism formalized in
+    arXiv:2603.16731 (state-update stalling once |update| < half a ULP)
+    and arXiv:2607.09800 (The Silent Freeze), and the fix already
+    shipped for bf16 training master weights by imoneoi/bf16_fused_adam
+    and (for Adafactor specifically) OneTrainer's own adafactor_extensions.py.
+
+    `values` holds [w0] (the initial parameter value), `q_values` holds
+    [decay_per_step] (lr*weight_decay, the fractional shrink AdamW
+    applies each step), matching this file's established two-array
+    naming convention for two-argument kernels (e.g.
+    weighted_sampling_key's [u], [weight]).
+    """
+    (w0,) = values
+    (decay_per_step,) = q_values
+    dt = DTYPES[dtype]
+    w = dt(w0)
+    factor = dt(1.0) - dt(decay_per_step)
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        for _ in range(num_steps):
+            w = dt(w * factor)
+    return float(w)
+
+
+def stable_weight_decay(values, q_values, num_steps: int, dtype: str):
+    """The OneTrainer#996 fix pattern (mirrors what Adafactor already
+    does in the same codebase, and what imoneoi/bf16_fused_adam and
+    apex's FusedAdam(master_weights=True) do generally): keep the
+    running parameter value in float64 precision for the ENTIRE decay
+    loop, and round to the requested storage dtype only once, at the
+    point the value is actually read back out for use -- never
+    mid-loop. Every sub-ULP-at-storage-precision update still shrinks
+    the float64 master correctly, so decay accumulates exactly as
+    configured; only the final read-out loses precision, not the
+    100+ intermediate steps.
+    """
+    (w0,) = values
+    (decay_per_step,) = q_values
+    w = np.float64(w0)
+    factor = 1.0 - np.float64(decay_per_step)
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        for _ in range(num_steps):
+            w = w * factor
+    return float(DTYPES[dtype](w))
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1188,4 +1245,5 @@ KERNELS = {
     "p2_quantile": (naive_p2_quantile, stable_p2_quantile),
     "repetition_penalty": (naive_repetition_penalty, stable_repetition_penalty),
     "speculative_reject": (naive_speculative_reject, stable_speculative_reject),
+    "weight_decay": (naive_weight_decay, stable_weight_decay),
 }

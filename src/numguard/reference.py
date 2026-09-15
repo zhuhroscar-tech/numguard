@@ -394,6 +394,25 @@ def gold_weighted_sampling_key(u: float, weight: float) -> Decimal:
     return ctx.divide(ctx.ln(u_d), w_d)
 
 
+def gold_weight_decay(values, q_values, num_steps: int) -> Decimal:
+    """w0 * (1 - decay_per_step)**num_steps, computed exactly via
+    Decimal exponentiation of the exact per-step multiplier -- the
+    closed-form geometric-decay identity that AdamW's per-step decoupled
+    weight decay is mathematically equivalent to (with no gradient
+    term, matching this kernel's isolated decay-only model). This is
+    NOT built by looping the kernel's own step-by-step multiply, so a
+    bug shared between the naive and stable per-step loops (e.g. both
+    using the wrong sign) could not hide behind agreeing with each
+    other only.
+    """
+    ctx = _ctx()
+    (w0,) = values
+    (decay_per_step,) = q_values
+    w0_d = ctx.create_decimal(repr(float(w0)))
+    factor = ctx.subtract(Decimal(1), ctx.create_decimal(repr(float(decay_per_step))))
+    return ctx.multiply(w0_d, ctx.power(factor, Decimal(num_steps)))
+
+
 def gold_p2_quantile(values: Sequence[float], prob: float) -> Decimal:
     """P^2 (Piecewise-Parabolic) streaming quantile estimator (Jain &
     Chlamtac, CACM 1985), computed entirely in 50-digit Decimal

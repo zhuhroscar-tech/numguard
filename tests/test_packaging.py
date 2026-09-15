@@ -109,6 +109,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "p2_quantile": "P^2 (Piecewise-Parabolic) streaming quantile estimator",
         "repetition_penalty": "Repetition penalty",
         "speculative_reject": "Speculative-decoding rejection sampling",
+        "weight_decay": "AdamW decoupled weight decay storage stall",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

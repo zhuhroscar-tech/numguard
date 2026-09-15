@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "numguard"
-version = "0.17.0"
-description = "Audit naive vs numerically-stable ML math kernels (softmax, log-sum-exp, cross-entropy, variance, layer_norm, rms_norm, kl_divergence, online_softmax, masked_softmax, sum, rope_cos, int8_add, hll_register, focal_loss_grad, pearson_correlation, weighted_sampling_key, geometric_mean, p2_quantile, repetition_penalty, speculative_reject) against a high-precision reference"
+version = "0.18.0"
+description = "Audit naive vs numerically-stable ML math kernels (softmax, log-sum-exp, cross-entropy, variance, layer_norm, rms_norm, kl_divergence, online_softmax, masked_softmax, sum, rope_cos, int8_add, hll_register, focal_loss_grad, pearson_correlation, weighted_sampling_key, geometric_mean, p2_quantile, repetition_penalty, speculative_reject, weight_decay) against a high-precision reference"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "zhuhroscar-tech" }]

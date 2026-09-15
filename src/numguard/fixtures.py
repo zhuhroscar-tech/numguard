@@ -80,6 +80,15 @@ class Fixture:
     # "participates in softmax") marks which positions the penalty is
     # applied to. None for every other kernel.
     rp_theta: Optional[float] = None
+    # Number of AdamW decay steps to simulate, used only by
+    # weight_decay fixtures -- `values` holds [w0] (initial parameter
+    # value) and the shared `q_values` field (reused from
+    # kl_divergence/pearson_correlation's second-array convention, but
+    # meaning "[decay_per_step]" here -- lr*weight_decay, a single
+    # scalar wrapped in a one-element sequence to match the field's
+    # type) holds the constant per-step decay fraction. None for every
+    # other kernel.
+    wd_num_steps: Optional[int] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -1310,6 +1319,64 @@ SPECULATIVE_REJECT_FIXTURES = [
     ),
 ]
 
+WEIGHT_DECAY_FIXTURES = [
+    Fixture(
+        "small_step_count_no_stall",
+        [1.0],
+        "Only 10 decay steps at a decay fraction well above the "
+        "float16 ULP at magnitude ~1.0 (~1e-2 near the value 1.0 in "
+        "IEEE754 half precision) -- the naive per-step-rounded loop "
+        "and the float64-master stable loop have not yet diverged "
+        "enough to exceed this kernel's tolerance at any dtype. A "
+        "genuine control case, not a constructed pass: with so few "
+        "steps and this large a decay fraction relative to float16's "
+        "own precision floor, both formulations still track the "
+        "closed-form Decimal reference closely.",
+        q_values=[0.05],
+        dtypes=("float16", "float32", "float64"),
+        wd_num_steps=10,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float16_total_stall_typical_adamw_hparams",
+        [1.0],
+        "The exact defect class in Nerogar/OneTrainer#996 (open bug, "
+        "filed 2025-09-13): typical AdamW hyperparameters (lr=1e-4, "
+        "weight_decay=0.01, decay_per_step = lr*wd = 1e-6) applied for "
+        "80000 steps to a parameter stored at bf16/float16 precision. "
+        "float16's ULP near 1.0 is ~1e-3, far larger than the "
+        "per-step 1e-6 decay fraction -- naive_weight_decay's per-step "
+        "round-to-storage-dtype rounds every single update back to "
+        "the SAME stored value, so weight decay silently does "
+        "NOTHING for the entire run (naive_final stays exactly 1.0, "
+        "the untouched initial value) while the float64-master stable "
+        "form correctly tracks the ~7.7% total decay the configured "
+        "hyperparameters actually specify.",
+        q_values=[1e-6],
+        dtypes=("float16",),
+        wd_num_steps=80000,
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "float32_partial_drift_same_hparams",
+        [1.0],
+        "The identical typical-AdamW-hyperparameter scenario as the "
+        "float16 fixture above (lr=1e-4, wd=0.01), but at float32 "
+        "storage precision over 20000 steps. float32's ULP near 1.0 "
+        "(~1.2e-7) is smaller than the 1e-6 per-step decay fraction, "
+        "so this is NOT a total stall -- some updates do register -- "
+        "but the naive per-step rounding still accumulates materially "
+        "more drift from the true geometric-decay trajectory (final "
+        "value ~0.9797 vs the correct ~0.9802) than keeping a "
+        "float64 master and rounding only once at read-out, "
+        "exceeding this kernel's tight float32 tolerance.",
+        q_values=[1e-6],
+        dtypes=("float32",),
+        wd_num_steps=20000,
+        expect_naive_ok=False,
+    ),
+]
+
 
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -1332,6 +1399,7 @@ FIXTURES_BY_KERNEL = {
     "p2_quantile": P2_QUANTILE_FIXTURES,
     "repetition_penalty": REPETITION_PENALTY_FIXTURES,
     "speculative_reject": SPECULATIVE_REJECT_FIXTURES,
+    "weight_decay": WEIGHT_DECAY_FIXTURES,
 }
 
 

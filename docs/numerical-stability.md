@@ -834,7 +834,54 @@ collapses to exactly `q` (up to ordinary floating-point rounding of the
 one shared array), regardless of which precision or code path produced
 it.
 
-All twenty derivations above are cross-checked in this repository
+## AdamW decoupled weight decay storage stall
+
+**Textbook definition:** AdamW's decoupled weight decay (Loshchilov &
+Hutter, 2019, "Decoupled Weight Decay Regularization") multiplies the
+parameter by `(1 - lr * weight_decay)` at every optimizer step,
+independent of the gradient-based Adam update. Over `N` steps this is
+mathematically equivalent to the closed-form geometric decay
+`w0 * (1 - lr*weight_decay)**N`.
+
+**Naive formula** (`naive_weight_decay`): apply the per-step multiply
+and **write the result straight back into the parameter's storage
+dtype every step** -- exactly what a real training loop does when the
+parameter tensor itself (not a separate float32 master copy) is bf16
+or float16. This is the real, currently-open production bug in
+Nerogar/OneTrainer#996 ("No weight decay with Adam, bf16 and
+stochastic rounding", filed 2025-09-13): "In Adam and AdamW, weight
+decay is applied in bf16, which is ineffective in bf16 ... With weight
+decay usually set at 0.01, multiplied by the learning rate, this is
+always smaller than what bf16 can represent and no weight decay is
+applied." The same mechanism is formalized generally as "state-update
+stalling" in arXiv:2603.16731 (an update smaller than half a
+unit-in-the-last-place rounds back to the same stored value under
+round-to-nearest) and arXiv:2607.09800 ("The Silent Freeze" -- a
+gradient-descent update below half a ULP freezes a coordinate
+deterministically, predictable a priori from the mantissa length
+alone). Once the per-step decay fraction `lr * weight_decay` is
+smaller than the storage dtype's ULP at the parameter's magnitude,
+**every single step's update rounds away to the identical stored
+value** -- not a one-off rounding error but a total, silent stall:
+weight decay is configured, the optimizer runs without error or
+warning, and it does precisely nothing for the entire training run.
+
+**Stable formula** (`stable_weight_decay`): keep the running parameter
+value in float64 precision for the entire decay loop -- exactly the
+fix already shipped for bf16 training master weights by
+imoneoi/bf16_fused_adam ("A mixed-precision optimizer to solve the
+stale weights problem of bfloat16 training") and by NVIDIA/apex's
+`FusedAdam(master_weights=True)` generally, and the same pattern
+OneTrainer's own `adafactor_extensions.py` already uses for Adafactor
+specifically (only AdamW was left applying decay directly in the
+storage dtype, per the linked issue) -- and round to the requested
+storage dtype only **once**, at the point the value is actually read
+back out for use. Every sub-ULP-at-storage-precision update still
+shrinks the float64 master correctly, so decay accumulates exactly as
+configured; only the final read-out loses precision, not the
+thousands of intermediate steps.
+
+All twenty-one derivations above are cross-checked in this repository
 against an independent implementation (`reference.py`) that uses
 Python's arbitrary-precision `decimal.Decimal` (50 significant digits)
 evaluated directly from the mathematical definitions -- not derived
@@ -842,12 +889,15 @@ from the same numpy code paths being tested (this includes
 `rope_cos`'s reference `cos()`, computed via a from-scratch Decimal
 Taylor series, deliberately not `math.cos`, so that a bug shared with a
 float64 trig implementation could not hide behind comparing against
-itself; and `focal_loss_grad`'s reference, computed via a symmetric
+itself; `focal_loss_grad`'s reference, computed via a symmetric
 central-difference numerical derivative of the focal loss formula
 itself at 50-digit precision, deliberately not via either kernel's
 analytic chain-rule derivation, so a shared algebra mistake in the
 naive/stable gradient formulas could not hide behind comparing them
-only to each other). This means a bug shared between the naive and
+only to each other; and `weight_decay`'s reference, computed via
+Decimal exponentiation of the exact closed-form geometric-decay
+identity, deliberately not by looping the kernel's own step-by-step
+multiply). This means a bug shared between the naive and
 stable numpy formulas (e.g. both computing the wrong quantity) would
 not be masked by comparing them only to each other. `numguard
 --check-naive-fails` (run in CI on every push) asserts that every naive
