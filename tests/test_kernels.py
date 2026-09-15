@@ -90,6 +90,61 @@ class TestSquaredEuclideanDistanceCancellation:
         assert float(gold) == pytest.approx(expected, rel=1e-9)
 
 
+class TestBpePairCountOverflow:
+    """huggingface/tokenizers#2058: BpeTrainer accumulates each
+    merge-candidate pair's corpus-wide occurrence count in a
+    fixed-width i32 with plain `+=` and no overflow check. A pair
+    whose true count exceeds i32::MAX silently wraps -- and can go
+    negative -- corrupting the trainer's own highest-count
+    merge-selection step with no error or warning. Confirmed still
+    open (issue open, fix PRs #2059/#2087/#2105 all unmerged) via a
+    live GitHub API check before this kernel was accepted."""
+
+    def test_naive_wraps_negative_at_issue_repro_shape(self):
+        # The issue's own reported shape: ~2.37 billion occurrences of
+        # one pair (space-space in indented code), split across three
+        # corpus-scan chunks summing just above i32::MAX.
+        increments = [790_000_000, 790_000_000, 790_000_000]
+        naive = kernels.naive_bpe_pair_count_overflow(increments)
+        stable = kernels.stable_bpe_pair_count_overflow(increments)
+        assert naive < 0, "expected the i32 accumulator to wrap negative"
+        assert naive == pytest.approx(-1_924_967_296.0)
+        assert stable == pytest.approx(2_370_000_000.0)
+
+    def test_naive_wraps_differently_further_beyond_boundary(self):
+        # A count further beyond i32::MAX (~6B, ~2.8x) confirms genuine
+        # two's-complement modular wraparound (a distinct wrong value),
+        # not merely a one-off sign flip at the boundary.
+        increments = [2_000_000_000, 2_000_000_000, 2_000_000_000]
+        naive = kernels.naive_bpe_pair_count_overflow(increments)
+        stable = kernels.stable_bpe_pair_count_overflow(increments)
+        assert naive == pytest.approx(1_705_032_704.0)
+        assert stable == pytest.approx(6_000_000_000.0)
+
+    def test_both_agree_below_i32_max_boundary(self):
+        # Control: exactly at i32::MAX, the last count representable
+        # without wrapping -- naive and stable must still agree here,
+        # confirming the bug is specifically an overflow-boundary
+        # defect and not a general large-count discrepancy.
+        increments = [2_000_000_000, 147_483_647]
+        naive = kernels.naive_bpe_pair_count_overflow(increments)
+        stable = kernels.stable_bpe_pair_count_overflow(increments)
+        assert naive == pytest.approx(2_147_483_647.0)
+        assert stable == pytest.approx(2_147_483_647.0)
+
+    def test_both_agree_on_everyday_small_count(self):
+        increments = [500, 300, 1200]
+        naive = kernels.naive_bpe_pair_count_overflow(increments)
+        stable = kernels.stable_bpe_pair_count_overflow(increments)
+        assert naive == pytest.approx(2000.0)
+        assert stable == pytest.approx(2000.0)
+
+    def test_reference_matches_direct_decimal_definition(self):
+        increments = [790_000_000, 790_000_000, 790_000_000]
+        gold = reference.gold_bpe_pair_count_overflow(increments)
+        assert float(gold) == pytest.approx(2_370_000_000.0)
+
+
 class TestLogSumExpOverflow:
     def test_naive_overflows_stable_does_not(self):
         values = [1000.0, 1001.0, 1002.0]

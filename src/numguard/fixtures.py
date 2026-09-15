@@ -855,6 +855,56 @@ FOCAL_LOSS_GRAD_FIXTURES = [
 ]
 
 
+BPE_PAIR_COUNT_OVERFLOW_FIXTURES = [
+    Fixture(
+        "everyday_small_pair_count",
+        [500, 300, 1200],
+        "A typical merge-candidate pair count accumulated from a few "
+        "corpus-scan chunks, nowhere near the i32 overflow boundary -- "
+        "control case where a correct arbitrary-precision accumulator "
+        "and a buggy fixed-width-32 accumulator agree exactly.",
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "boundary_at_i32_max",
+        [2_000_000_000, 147_483_647],
+        "Accumulates to exactly i32::MAX (2,147,483,647) -- the last "
+        "count representable in a 32-bit signed integer without "
+        "wrapping. Control case confirming the bug is specifically an "
+        "overflow-boundary defect, not a general large-count issue.",
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "tokenizers_issue_2058_repro_2_37b",
+        [790_000_000, 790_000_000, 790_000_000],
+        "The huggingface/tokenizers#2058 issue's own reported shape: a "
+        "pair (space-space, extremely common in indented source code) "
+        "whose true corpus-wide count is ~2.37 billion -- just above "
+        "i32::MAX. The buggy i32 `+=` accumulator (AHashMap<Pair, "
+        "i32>` in BpeTrainer, incremented with no overflow check) "
+        "silently wraps via two's-complement to a NEGATIVE count "
+        "(verified in this repo's test suite), which makes the "
+        "trainer's own highest-count merge-selection step skip what "
+        "is actually the single most frequent pair in the corpus -- "
+        "silently corrupting the learned merge order with no error.",
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "far_beyond_boundary_6b",
+        [2_000_000_000, 2_000_000_000, 2_000_000_000],
+        "A pair count further beyond the boundary (~6 billion, ~2.8x "
+        "i32::MAX) -- confirms the corruption isn't confined to just "
+        "past the boundary but wraps to a different (still wrong) "
+        "value for any count crossing further into overflow territory, "
+        "consistent with two's-complement modular wraparound rather "
+        "than saturation.",
+        dtypes=("float64",),
+    ),
+]
+
+
 SQUARED_EUCLIDEAN_DISTANCE_FIXTURES = [
     Fixture(
         "everyday_clean_no_offset",
@@ -1692,6 +1742,7 @@ FIXTURES_BY_KERNEL = {
     "gradient_accumulation_bias": GRADIENT_ACCUMULATION_BIAS_FIXTURES,
     "longrope_factor_select": LONGROPE_FACTOR_SELECT_FIXTURES,
     "squared_euclidean_distance": SQUARED_EUCLIDEAN_DISTANCE_FIXTURES,
+    "bpe_pair_count_overflow": BPE_PAIR_COUNT_OVERFLOW_FIXTURES,
 }
 
 

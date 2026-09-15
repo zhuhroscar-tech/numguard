@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select", "squared_euclidean_distance")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select", "squared_euclidean_distance", "bpe_pair_count_overflow")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -135,6 +135,9 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
     elif kernel == "squared_euclidean_distance":
         computed = fn(fixture.values, fixture.q_values, dtype)
         gold = reference.gold_squared_euclidean_distance(fixture.values, fixture.q_values)
+    elif kernel == "bpe_pair_count_overflow":
+        computed = fn(fixture.values)
+        gold = reference.gold_bpe_pair_count_overflow(fixture.values)
     else:
         raise ValueError(f"not a scalar kernel: {kernel}")
 

@@ -259,18 +259,39 @@ a blog post or a framework-internal function you have to trust blindly.
   true (small) answer, not an aggregation-order or branch-selection
   mistake.
 
+- **BPE trainer pair-count accumulator overflow**
+  (`bpe_pair_count_overflow`): a real, currently-open bug --
+  huggingface/tokenizers#2058 (confirmed still open, its three linked
+  fix PRs #2059/#2087/#2105 all still unmerged, verified live via the
+  GitHub API before acceptance) -- where `BpeTrainer`'s Rust
+  implementation accumulates each merge-candidate pair's corpus-wide
+  occurrence count in a fixed-width `i32` with no overflow check.
+  Common pairs (two-space indentation in code corpora) can exceed
+  `i32::MAX` (~2.15 billion), silently wrapping the count NEGATIVE via
+  two's-complement -- verified in this repo's fixtures at the issue's
+  own ~2.37B reproduction shape. Because the trainer's own
+  merge-selection step always picks the highest-count pair, a wrapped
+  count makes it silently skip the corpus's actual most-frequent pair,
+  corrupting the learned merge order (and every downstream
+  tokenization) with no error. A different bug class again: an integer
+  accumulator overflow in a training-time bookkeeping structure, not a
+  floating-point cancellation/overflow/aggregation-order bug in a math
+  formula.
+
 ## What this does
 
-For each of twenty-four kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty-five kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
 `geometric_mean`, `p2_quantile`, `repetition_penalty`,
 `speculative_reject`, `weight_decay`, `gradient_accumulation_bias`,
-`longrope_factor_select`, `squared_euclidean_distance`),
-across three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
-`hll_register` are scored at `float64` only, since they audit integer
-codes/register values rather than a dtype-swept float array), on a
+`longrope_factor_select`, `squared_euclidean_distance`,
+`bpe_pair_count_overflow`),
+across three dtypes (`float16`, `float32`, `float64` -- `int8_add`,
+`hll_register`, and `bpe_pair_count_overflow` are scored at `float64`
+only, since they audit integer codes/register values/counts rather
+than a dtype-swept float array), on a
 curated set of adversarial and everyday fixtures, numguard:
 
 1. Runs the naive (textbook) formula and the stable (standard

@@ -113,6 +113,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "gradient_accumulation_bias": "Gradient-accumulation loss bias",
         "longrope_factor_select": "LongRoPE short/long scaling-factor selection",
         "squared_euclidean_distance": "Squared Euclidean distance via dot-product expansion",
+        "bpe_pair_count_overflow": "BPE trainer pair-count accumulator overflow",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

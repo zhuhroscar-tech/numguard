@@ -131,6 +131,20 @@ def gold_sum(values: Sequence[float]) -> Decimal:
     return total
 
 
+def gold_bpe_pair_count_overflow(increments: Sequence[int]) -> Decimal:
+    """The true, unbounded occurrence count for one merge-candidate pair:
+    the exact sum of every corpus-scan increment, computed in Decimal
+    (arbitrary precision) rather than via any fixed-width integer type --
+    deliberately not built from numpy's int32/int64 code paths (the
+    things under test in naive_/stable_bpe_pair_count_overflow), giving
+    an independent ground truth a shared bug could not hide behind."""
+    ctx = _ctx()
+    total = ctx.create_decimal(0)
+    for inc in increments:
+        total = ctx.add(total, ctx.create_decimal(int(inc)))
+    return total
+
+
 def gold_squared_euclidean_distance(x_values: Sequence[float], y_values: Sequence[float]) -> Decimal:
     """sum((x_i - y_i)^2) computed elementwise at 50-digit precision --
     the textbook squared-Euclidean-distance definition, with no

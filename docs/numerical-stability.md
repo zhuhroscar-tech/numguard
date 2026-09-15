@@ -1063,6 +1063,65 @@ every push) asserts that every naive fixture documented above still
 actually fails, and every stable counterpart still actually passes --
 proving these are live regression tests, not decorative claims.
 
+## BPE trainer pair-count accumulator overflow
+
+**Textbook/reference definition:** the total number of times a
+candidate merge pair occurs across an entire training corpus -- an
+unbounded, non-negative integer count, computed simply as the sum of
+every per-chunk occurrence increment observed while scanning the
+corpus.
+
+**Naive formula** (`naive_bpe_pair_count_overflow`): accumulate each
+increment into a fixed-width 32-bit signed integer with plain `+=` and
+no overflow check -- the exact shape of huggingface/tokenizers'
+`BpeTrainer` (`tokenizers/src/models/bpe/trainer.rs`), which stores
+`AHashMap<Pair, i32>` and increments it via
+`*pair_counts.entry(cur_pair).or_default() += counts[i] as i32;` with
+no guard. This is a real, currently-open bug: GitHub issue
+huggingface/tokenizers#2058, still open at time of writing, with three
+linked fix PRs (#2059, #2087, #2105) all still unmerged -- verified
+live via the GitHub API immediately before this kernel was accepted,
+per this repository's reproduce-before-accept discipline (a GitHub
+issue is evidence a bug EXISTED at some version, not that it still does
+now; the fix here is confirmed NOT yet released). Two-space indentation
+is an extremely common pair in code corpora and can exceed
+`i32::MAX` (2,147,483,647) occurrences in a sufficiently large training
+set (the issue's own reproduction: ~2.37 billion occurrences from a
+30-million-line synthetic corpus). Once a pair's true count crosses
+that boundary, the fixed-width accumulator silently wraps via two's-
+complement -- verified in this repository's test suite going strictly
+NEGATIVE (`-1,924,967,296` at the issue's own ~2.37B repro shape,
+`1,705,032,704` at a further ~6B shape, confirming genuine modular
+wraparound rather than a one-off sign flip). Since `BpeTrainer`'s own
+merge-selection step picks the single highest-count pair at every
+training step, a wrapped-negative (or merely wrapped-wrong) count
+silently removes what is actually the corpus's most frequent pair from
+contention, corrupting the entire downstream merge order and every
+tokenization built from it -- with no error, warning, or crash at
+training time.
+
+**Stable formula** (`stable_bpe_pair_count_overflow`): accumulate in
+arbitrary precision (Python's native unbounded `int`), matching the
+real, already-drafted-but-unmerged fix in PR#2059/#2087/#2105, which
+widens the map's value type from `i32` to `i64` (`i64::MAX` is
+far beyond any realistic corpus's pair count, so this never wraps for
+real-world input).
+
+All twenty-five derivations above are cross-checked in this repository
+against an independent implementation (`reference.py`) built entirely
+from Python's arbitrary-precision `decimal.Decimal` type at 50
+significant digits, evaluated directly from each kernel's mathematical
+definition rather than derived from the same numpy/int-width code path
+under test (see prior paragraphs); `bpe_pair_count_overflow`'s
+reference (`gold_bpe_pair_count_overflow`) sums every increment in
+Decimal arithmetic with no fixed-width integer type at all, so a bug
+shared between the naive and stable accumulators cannot hide behind
+comparing them only to each other. `numguard --check-naive-fails` (run
+in CI on every push) asserts that every naive fixture documented above
+still actually fails, and every stable counterpart still actually
+passes -- proving these are live regression tests, not decorative
+claims.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

@@ -768,6 +768,49 @@ def stable_squared_euclidean_distance(x_values, y_values, dtype: str) -> float:
         return float(np.dot(diff, diff))
 
 
+# --- BPE trainer pair-count accumulator (huggingface/tokenizers #2058) ---
+#
+# Real, currently-open bug (issue #2058, still open; the three linked
+# fix PRs #2059/#2087/#2105 are all still unmerged as of this writing --
+# verified live via the GitHub API before writing this kernel's
+# acceptance card, per this repo's own reproduce-before-accept
+# discipline). huggingface/tokenizers' Rust BpeTrainer accumulates each
+# candidate merge pair's corpus-wide occurrence count in
+# `AHashMap<Pair, i32>` (`tokenizers/src/models/bpe/trainer.rs`),
+# incremented with plain `+=` and no overflow check:
+#   *pair_counts.entry(cur_pair).or_default() += counts[i] as i32;
+# A pair whose true count exceeds i32::MAX (2,147,483,647) -- reached in
+# practice by common pairs (e.g. two-space indentation) in large code
+# corpora -- silently wraps via two's-complement instead of raising, and
+# can even go negative. Since BpeTrainer's own merge-selection step
+# picks the highest-count pair at each step, a wrapped-negative count
+# makes the trainer skip what is actually the single most frequent pair
+# in the corpus, silently corrupting the learned merge order (and every
+# downstream tokenization) with no error or warning at training time.
+def naive_bpe_pair_count_overflow(increments) -> float:
+    """Reproduce Rust's i32 `+=` wrapping behavior for a pair's running
+    occurrence count, one corpus-scan increment at a time (numpy int32
+    arithmetic wraps identically to Rust's release-mode integer
+    overflow, which is what the compiled BpeTrainer actually ships)."""
+    total = np.int32(0)
+    with np.errstate(over="ignore"):
+        for inc in increments:
+            total = np.add(total, np.int32(inc), dtype=np.int32)
+    return float(total)
+
+
+def stable_bpe_pair_count_overflow(increments) -> float:
+    """Spec-correct: accumulate in arbitrary precision (Python int --
+    matching the actual merged-but-not-yet-released fix in PR#2059/
+    #2087/#2105, which widens the map's value type from i32 to i64;
+    i64::MAX is far beyond any realistic corpus's pair count), so the
+    running total for a pair never wraps for any real-world input."""
+    total = 0
+    for inc in increments:
+        total += int(inc)
+    return float(total)
+
+
 def naive_pearson_correlation(x_values, y_values, dtype: str) -> float:
     """(n*sum(xy) - sum(x)*sum(y)) / sqrt((n*sum(x^2)-sum(x)^2) *
     (n*sum(y^2)-sum(y)^2)) -- the literal "sum of products" formula for
@@ -1398,4 +1441,5 @@ KERNELS = {
     "gradient_accumulation_bias": (naive_gradient_accumulation_bias, stable_gradient_accumulation_bias),
     "longrope_factor_select": (naive_longrope_factor_select, stable_longrope_factor_select),
     "squared_euclidean_distance": (naive_squared_euclidean_distance, stable_squared_euclidean_distance),
+    "bpe_pair_count_overflow": (naive_bpe_pair_count_overflow, stable_bpe_pair_count_overflow),
 }
