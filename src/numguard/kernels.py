@@ -1416,6 +1416,69 @@ def stable_longrope_factor_select(
         return np.cos(angle).astype(dt)
 
 
+def naive_beam_search_length_penalty(
+    values, q_values, length_penalty: float, ends_with_eos: bool, dtype: str,
+) -> float:
+    """Real, currently-present bug in vLLM's beam-search scorer
+    (vllm-project/vllm#2606, "Beam Search Length Normalization Wrong"):
+    `get_beam_search_score` divides a beam's cumulative log-probability
+    by `seq_len ** length_penalty`, where `seq_len` is meant to be the
+    number of GENERATED tokens (the standard length-penalty definition,
+    matching HuggingFace transformers' BeamHypotheses.add). vLLM's own
+    `BeamSearchSequence.tokens` list holds the PROMPT tokens followed by
+    the generated tokens (seeded as `tokens=prompt_token_ids` and then
+    grown via `tokens=current_beam.tokens + [token_id]` each step, see
+    vllm/entrypoints/generate/beam_search/{online,offline}.py), so
+    `len(tokens)` -- what the scorer actually uses via
+    `get_beam_search_score(x.tokens, ...)` in
+    vllm/entrypoints/generate/beam_search/utils.py -- silently includes
+    the entire prompt length in the length-penalty exponent. Confirmed
+    still present by reading vLLM's current mainline source directly
+    (commit c6fa1f0, 2026-09-15): `seq_len = len(tokens)` with no
+    prompt-length subtraction anywhere in `get_beam_search_score`. The
+    original issue #2606 was auto-closed by a stale-bot for inactivity
+    (not because it was fixed), and its own linked fix, PR#7007 ("Use
+    correct length in beam search scoring"), was closed unmerged.
+
+    `values` holds [cum_logprob] (the beam's summed generated-token log
+    -probability); `q_values` holds [prompt_len, output_len] (the
+    prompt's token count and the number of tokens generated so far).
+    When the prompt is much longer than the output -- the common case
+    for summarization/RAG/long-context prompts with short completions
+    -- this makes `length_penalty` have almost no effect on beam
+    ranking, exactly as multiple independent users reported (the
+    issue's original reporter and PR#7007's two co-authors, who found
+    it independently after their vLLM-served outputs diverged from the
+    same model served via HuggingFace `generate`).
+    """
+    dt = DTYPES[dtype]
+    (cum_logprob,) = values
+    prompt_len, output_len = q_values
+    seq_len = int(prompt_len) + int(output_len)
+    if ends_with_eos:
+        seq_len -= 1
+    denom = dt(max(seq_len, 1)) ** dt(length_penalty)
+    return float(dt(cum_logprob) / denom)
+
+
+def stable_beam_search_length_penalty(
+    values, q_values, length_penalty: float, ends_with_eos: bool, dtype: str,
+) -> float:
+    """The correct definition (matching HuggingFace transformers'
+    `BeamHypotheses.add`, and PR#7007's proposed fix: swap
+    `get_len()` for `get_output_len()`): the length-penalty exponent
+    uses only the number of GENERATED tokens, never the prompt length.
+    """
+    dt = DTYPES[dtype]
+    (cum_logprob,) = values
+    _prompt_len, output_len = q_values
+    seq_len = int(output_len)
+    if ends_with_eos:
+        seq_len -= 1
+    denom = dt(max(seq_len, 1)) ** dt(length_penalty)
+    return float(dt(cum_logprob) / denom)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1442,4 +1505,5 @@ KERNELS = {
     "longrope_factor_select": (naive_longrope_factor_select, stable_longrope_factor_select),
     "squared_euclidean_distance": (naive_squared_euclidean_distance, stable_squared_euclidean_distance),
     "bpe_pair_count_overflow": (naive_bpe_pair_count_overflow, stable_bpe_pair_count_overflow),
+    "beam_search_length_penalty": (naive_beam_search_length_penalty, stable_beam_search_length_penalty),
 }

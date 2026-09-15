@@ -1107,7 +1107,7 @@ widens the map's value type from `i32` to `i64` (`i64::MAX` is
 far beyond any realistic corpus's pair count, so this never wraps for
 real-world input).
 
-All twenty-five derivations above are cross-checked in this repository
+All twenty-six derivations above are cross-checked in this repository
 against an independent implementation (`reference.py`) built entirely
 from Python's arbitrary-precision `decimal.Decimal` type at 50
 significant digits, evaluated directly from each kernel's mathematical
@@ -1121,6 +1121,64 @@ in CI on every push) asserts that every naive fixture documented above
 still actually fails, and every stable counterpart still actually
 passes -- proving these are live regression tests, not decorative
 claims.
+
+## Beam-search length-penalty prompt-length leak
+
+**Textbook/reference definition:** the standard length-penalty formula
+for scoring a completed beam (Wu et al. 2016, Sec. 7; the same
+definition implemented by HuggingFace transformers'
+`BeamHypotheses.add`): `score = cum_logprob / (output_len ** length_
+penalty)`, where `output_len` is the number of tokens the model
+GENERATED for that beam -- never the prompt/context length that
+preceded generation.
+
+**Naive formula** (`naive_beam_search_length_penalty`): divide by
+`(prompt_len + output_len) ** length_penalty` instead. This is the
+exact, currently-present shape of vLLM's own beam-search scorer
+(`get_beam_search_score` in
+`vllm/entrypoints/generate/beam_search/utils.py`): the function's
+`seq_len` argument is computed as `len(tokens)`, and vLLM's
+`BeamSearchSequence.tokens` list is seeded with the prompt's token IDs
+and then grown one generated token at a time (`tokens=prompt_token_ids`
+at beam-start, then `tokens=current_beam.tokens + [token_id]` every
+subsequent step, in both the offline and online beam-search code
+paths) -- so `len(tokens)` silently includes the entire prompt length
+in every score. Confirmed still present by reading vLLM's current
+mainline source directly (commit `c6fa1f0`, 2026-09-15): there is no
+prompt-length subtraction anywhere in `get_beam_search_score`. This is
+a real, previously-reported defect: GitHub issue
+vllm-project/vllm#2606 ("Beam Search Length Normalization Wrong"),
+independently rediscovered and reported again in linked PR #7007 ("Use
+correct length in beam search scoring") by two further users who
+noticed vLLM-served beam-search output diverging from the same model
+served via HuggingFace `generate`. Issue #2606 was auto-closed by a
+stale-activity bot, not because it was fixed, and PR #7007 was closed
+unmerged -- verified live via the GitHub API immediately before this
+kernel was accepted, per this repository's reproduce-before-accept
+discipline. In production terms: whenever a request's prompt is much
+longer than its generated completion (summarization, RAG, long-context
+chat with a short reply -- an extremely common shape), the shared
+prompt length dominates every beam's score denominator almost equally,
+so `length_penalty` -- a parameter users set specifically to bias
+ranking toward shorter or longer completions -- ends up having almost
+no effect on which beam actually wins, exactly as both the issue's
+original reporter and PR #7007's authors independently observed.
+
+**Stable formula** (`stable_beam_search_length_penalty`): divide by
+`output_len ** length_penalty` only, exactly PR #7007's proposed fix
+(swap `get_len()` for `get_output_len()`).
+
+`beam_search_length_penalty`'s reference
+(`gold_beam_search_length_penalty`) computes `cum_logprob / (Decimal(
+output_len) ** Decimal(length_penalty))` directly from the textbook
+definition in 50-digit Decimal arithmetic, independent of how either
+kernel under test tracks `seq_len` -- so a bug shared between the naive
+and stable kernels (e.g. both mishandling the EOS-token adjustment)
+could not hide behind comparing them only to each other. `numguard
+--check-naive-fails` (run in CI on every push) asserts that every
+naive fixture documented above still actually fails, and every stable
+counterpart still actually passes -- proving these are live regression
+tests, not decorative claims.
 
 ## References
 

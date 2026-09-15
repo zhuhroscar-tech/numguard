@@ -107,6 +107,17 @@ class Fixture:
     lr_original_max_pos: Optional[int] = None
     lr_seq_len: Optional[int] = None
     lr_ctx_alloc: Optional[int] = None
+    # Beam-search length-penalty parameters, used only by
+    # beam_search_length_penalty fixtures -- `values` holds
+    # [cum_logprob] (the beam's summed generated-token log-probability)
+    # and the shared `q_values` field (reused from
+    # kl_divergence/pearson_correlation's second-array convention, but
+    # meaning "[prompt_len, output_len]" here) holds the prompt token
+    # count and the number of tokens generated so far. See
+    # vllm-project/vllm#2606: the buggy kernel includes prompt_len in
+    # the length-penalty exponent, when only output_len belongs there.
+    bs_length_penalty: Optional[float] = None
+    bs_ends_with_eos: Optional[bool] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -901,6 +912,87 @@ BPE_PAIR_COUNT_OVERFLOW_FIXTURES = [
         "consistent with two's-complement modular wraparound rather "
         "than saturation.",
         dtypes=("float64",),
+    ),
+]
+
+
+BEAM_SEARCH_LENGTH_PENALTY_FIXTURES = [
+    Fixture(
+        "zero_prompt_len_control",
+        [-6.0],
+        "Control case: prompt_len=0 (no prefix at all, e.g. a raw "
+        "completion-only request) makes naive's seq_len = 0+output_len "
+        "identical to stable's seq_len = output_len, so the two "
+        "kernels agree exactly -- confirms the bug requires an actual "
+        "non-zero prompt length, not that the formula itself is always "
+        "broken.",
+        q_values=[0, 6],
+        bs_length_penalty=1.1,
+        bs_ends_with_eos=True,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "long_prompt_short_output_vllm_issue_2606",
+        [-6.0],
+        "The vllm-project/vllm#2606 issue shape: a long prompt (500 "
+        "tokens, e.g. a RAG/summarization context) with a short, "
+        "confident 6-token completion. The buggy kernel divides "
+        "cum_logprob by (500+6-1)**1.1 = 505**1.1, making "
+        "length_penalty have almost no practical effect on this beam's "
+        "score versus a beam with a very different output length -- "
+        "exactly the 'length_penalty has almost no effect on the "
+        "ranking of beams' symptom PR#7007's author reported.",
+        q_values=[500, 6],
+        bs_length_penalty=1.1,
+        bs_ends_with_eos=True,
+        dtypes=("float32", "float64"),
+    ),
+    Fixture(
+        "long_prompt_long_output_vllm_issue_2606",
+        [-20.0],
+        "Same 500-token prompt as above, paired with a longer (40-"
+        "token) but less individually-confident completion. Together "
+        "with the short-output fixture above, this reproduces PR#7007's "
+        "exact failure mode: with the buggy kernel, both beams' scores "
+        "are dominated by the shared ~500-token prompt length and land "
+        "within a few percent of each other regardless of the true "
+        "38-token output-length difference, so length_penalty=1.1 "
+        "(meant to favor the longer, lower-per-token-loss completion) "
+        "fails to separate them -- while the correct output-length-"
+        "only formula ranks them by their actual generated content.",
+        q_values=[500, 40],
+        bs_length_penalty=1.1,
+        bs_ends_with_eos=True,
+        dtypes=("float32", "float64"),
+    ),
+    Fixture(
+        "zero_length_penalty_no_op_control",
+        [-6.0],
+        "length_penalty=0.0 makes the exponent a no-op (x**0=1) "
+        "regardless of which seq_len is used, so naive and stable "
+        "agree exactly even with a long prompt -- confirms the bug is "
+        "specific to a non-zero length_penalty, not the prompt/output "
+        "split itself.",
+        q_values=[500, 6],
+        bs_length_penalty=0.0,
+        bs_ends_with_eos=True,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "no_eos_still_diverges",
+        [-9.0],
+        "An aborted/truncated beam that never emitted EOS (e.g. hit "
+        "max_tokens first) -- ends_with_eos=False, so neither kernel "
+        "subtracts 1, but the buggy kernel still adds the full "
+        "300-token prompt length into its exponent's base, diverging "
+        "from the correct output-only value just as much as the "
+        "EOS-terminated cases above.",
+        q_values=[300, 12],
+        bs_length_penalty=1.4,
+        bs_ends_with_eos=False,
+        dtypes=("float32", "float64"),
     ),
 ]
 
@@ -1743,6 +1835,7 @@ FIXTURES_BY_KERNEL = {
     "longrope_factor_select": LONGROPE_FACTOR_SELECT_FIXTURES,
     "squared_euclidean_distance": SQUARED_EUCLIDEAN_DISTANCE_FIXTURES,
     "bpe_pair_count_overflow": BPE_PAIR_COUNT_OVERFLOW_FIXTURES,
+    "beam_search_length_penalty": BEAM_SEARCH_LENGTH_PENALTY_FIXTURES,
 }
 
 

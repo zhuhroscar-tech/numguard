@@ -462,6 +462,30 @@ def gold_gradient_accumulation_bias(values, q_values) -> Decimal:
     return ctx.divide(sum(gs, Decimal(0)), sum(ns, Decimal(0)))
 
 
+def gold_beam_search_length_penalty(
+    values, q_values, length_penalty: float, ends_with_eos: bool,
+) -> Decimal:
+    """cum_logprob / (output_len ** length_penalty) computed exactly in
+    50-digit Decimal arithmetic, straight from the textbook length-
+    penalty definition (Wu et al. 2016, Sec. 7; matches HuggingFace
+    transformers' BeamHypotheses.add) -- the exponent uses only the
+    number of GENERATED tokens, never the prompt length, independent of
+    either kernel's own bookkeeping of `seq_len`. `values` holds
+    [cum_logprob]; `q_values` holds [prompt_len, output_len].
+    """
+    ctx = _ctx()
+    (cum_logprob,) = values
+    _prompt_len, output_len = q_values
+    seq_len = int(output_len)
+    if ends_with_eos:
+        seq_len -= 1
+    seq_len = max(seq_len, 1)
+    cum_d = ctx.create_decimal(repr(float(cum_logprob)))
+    lp_d = ctx.create_decimal(repr(float(length_penalty)))
+    denom = ctx.power(Decimal(seq_len), lp_d)
+    return ctx.divide(cum_d, denom)
+
+
 def gold_p2_quantile(values: Sequence[float], prob: float) -> Decimal:
     """P^2 (Piecewise-Parabolic) streaming quantile estimator (Jain &
     Chlamtac, CACM 1985), computed entirely in 50-digit Decimal

@@ -278,16 +278,38 @@ a blog post or a framework-internal function you have to trust blindly.
   floating-point cancellation/overflow/aggregation-order bug in a math
   formula.
 
+- **Beam-search length-penalty prompt-length leak**
+  (`beam_search_length_penalty`): a real, previously-reported bug in
+  vLLM's beam-search scorer -- vllm-project/vllm#2606 ("Beam Search
+  Length Normalization Wrong") and its linked, unmerged fix PR #7007
+  (confirmed still present by reading vLLM's current mainline source
+  directly before acceptance) -- where `get_beam_search_score` divides
+  a beam's cumulative log-probability by `seq_len ** length_penalty`
+  using `seq_len = len(tokens)`, and vLLM's own `BeamSearchSequence.
+  tokens` list holds the PROMPT tokens followed by the generated
+  tokens. This silently folds the entire prompt length into the
+  length-penalty exponent, instead of only the number of generated
+  tokens (the standard definition HuggingFace transformers' own
+  `BeamHypotheses.add` uses). Whenever a request's prompt is much
+  longer than its completion -- summarization, RAG, long-context chat
+  with a short reply -- the shared prompt length dominates every
+  beam's score almost equally, so `length_penalty` ends up having
+  almost no effect on which beam wins, exactly as both the issue's
+  reporter and PR #7007's two independent co-authors observed. A
+  different bug class again: an off-by-scope error in which quantity a
+  formula's own length term should measure, not a floating-point
+  precision bug at all.
+
 ## What this does
 
-For each of twenty-five kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty-six kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
 `geometric_mean`, `p2_quantile`, `repetition_penalty`,
 `speculative_reject`, `weight_decay`, `gradient_accumulation_bias`,
 `longrope_factor_select`, `squared_euclidean_distance`,
-`bpe_pair_count_overflow`),
+`bpe_pair_count_overflow`, `beam_search_length_penalty`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add`,
 `hll_register`, and `bpe_pair_count_overflow` are scored at `float64`
 only, since they audit integer codes/register values/counts rather

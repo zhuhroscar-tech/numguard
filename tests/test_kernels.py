@@ -1427,3 +1427,120 @@ class TestLongRopeFactorSelect:
             assert float(n) == pytest.approx(float(g), rel=1e-9, abs=1e-10)
             assert float(s) == pytest.approx(float(g), rel=1e-9, abs=1e-10)
 
+
+
+class TestBeamSearchLengthPenalty:
+    """vllm-project/vllm#2606 ("Beam Search Length Normalization Wrong"):
+    vLLM's get_beam_search_score computes seq_len from len(tokens),
+    where `tokens` is the prompt tokens followed by the generated
+    tokens -- so the length-penalty exponent silently includes the
+    entire prompt length instead of only the generated-token count.
+    Confirmed still present by reading vLLM's current mainline source
+    (vllm/entrypoints/generate/beam_search/utils.py, commit c6fa1f0,
+    2026-09-15): `seq_len = len(tokens)` with no prompt-length
+    subtraction. Issue #2606 was closed by a stale-bot for inactivity,
+    not because it was fixed; its own linked fix, PR#7007, was closed
+    unmerged.
+    """
+
+    def test_naive_diverges_stable_matches_long_prompt_short_output(self):
+        # The issue's own shape: prompt (500 tokens) >> output (6
+        # tokens). The buggy kernel's exponent base is 505 instead of
+        # the correct 5, crushing the effect of length_penalty=1.1.
+        cum_logprob = -6.0
+        gold = reference.gold_beam_search_length_penalty(
+            [cum_logprob], [500, 6], 1.1, True,
+        )
+        naive = kernels.naive_beam_search_length_penalty(
+            [cum_logprob], [500, 6], 1.1, True, "float64",
+        )
+        stable = kernels.stable_beam_search_length_penalty(
+            [cum_logprob], [500, 6], 1.1, True, "float64",
+        )
+        assert naive != pytest.approx(float(gold), rel=1e-6, abs=1e-9)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+        # The buggy score is much closer to zero (weaker penalty
+        # effect) than the correct score -- exactly the reported
+        # "length_penalty has almost no effect" symptom.
+        assert abs(naive) < abs(stable) / 10
+
+    def test_naive_ranking_flips_relative_to_correct_ranking(self):
+        # Two beams sharing the same 500-token prompt: a short
+        # confident completion (A) vs a longer, less-confident-overall
+        # but lower-per-token-loss completion (B). The buggy kernel
+        # (dominated by the shared prompt length) ranks them
+        # differently from the correct output-length-only kernel --
+        # reproducing PR#7007's exact reported failure mode.
+        beam_a = ([-6.0], [500, 6])
+        beam_b = ([-20.0], [500, 40])
+        naive_a = kernels.naive_beam_search_length_penalty(
+            *beam_a, 1.1, True, "float64",
+        )
+        naive_b = kernels.naive_beam_search_length_penalty(
+            *beam_b, 1.1, True, "float64",
+        )
+        stable_a = kernels.stable_beam_search_length_penalty(
+            *beam_a, 1.1, True, "float64",
+        )
+        stable_b = kernels.stable_beam_search_length_penalty(
+            *beam_b, 1.1, True, "float64",
+        )
+        assert naive_a > naive_b, "buggy kernel ranks beam A ahead"
+        assert stable_b > stable_a, "correct kernel ranks beam B ahead"
+
+    def test_both_agree_when_prompt_len_is_zero(self):
+        # Control: no prompt prefix at all -- naive's seq_len reduces
+        # algebraically to exactly stable's seq_len, so they must
+        # agree. Confirms the bug requires an actual non-zero prompt
+        # length, not that the formula is broken outright.
+        gold = reference.gold_beam_search_length_penalty(
+            [-6.0], [0, 6], 1.1, True,
+        )
+        naive = kernels.naive_beam_search_length_penalty(
+            [-6.0], [0, 6], 1.1, True, "float64",
+        )
+        stable = kernels.stable_beam_search_length_penalty(
+            [-6.0], [0, 6], 1.1, True, "float64",
+        )
+        assert naive == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+
+    def test_both_agree_when_length_penalty_is_zero(self):
+        # Control: length_penalty=0.0 makes x**0=1 regardless of which
+        # seq_len is used, so a long prompt no longer matters.
+        gold = reference.gold_beam_search_length_penalty(
+            [-6.0], [500, 6], 0.0, True,
+        )
+        naive = kernels.naive_beam_search_length_penalty(
+            [-6.0], [500, 6], 0.0, True, "float64",
+        )
+        stable = kernels.stable_beam_search_length_penalty(
+            [-6.0], [500, 6], 0.0, True, "float64",
+        )
+        assert naive == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+        assert naive == pytest.approx(stable, rel=1e-9, abs=1e-12)
+
+    def test_naive_diverges_without_eos_too(self):
+        # An aborted beam that never emitted EOS: ends_with_eos=False
+        # means neither kernel subtracts 1, but the buggy kernel still
+        # folds the prompt length into its exponent's base.
+        gold = reference.gold_beam_search_length_penalty(
+            [-9.0], [300, 12], 1.4, False,
+        )
+        naive = kernels.naive_beam_search_length_penalty(
+            [-9.0], [300, 12], 1.4, False, "float64",
+        )
+        stable = kernels.stable_beam_search_length_penalty(
+            [-9.0], [300, 12], 1.4, False, "float64",
+        )
+        assert naive != pytest.approx(float(gold), rel=1e-6, abs=1e-9)
+        assert stable == pytest.approx(float(gold), rel=1e-9, abs=1e-12)
+
+    def test_reference_matches_direct_decimal_definition(self):
+        gold = reference.gold_beam_search_length_penalty(
+            [-20.0], [500, 40], 1.1, True,
+        )
+        # 39 ** 1.1, computed independently in plain float64 as a
+        # sanity cross-check of the Decimal reference itself.
+        assert float(gold) == pytest.approx(-20.0 / (39.0 ** 1.1), rel=1e-9)
