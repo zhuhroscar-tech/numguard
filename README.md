@@ -158,14 +158,26 @@ a blog post or a framework-internal function you have to trust blindly.
   different bug class from every kernel above: drift in a *stateful*
   algorithm's internal bookkeeping across many steps, not a single
   expression's overflow/underflow/cancellation.
+- **Repetition penalty is gauge-dependent, not overflow-prone**
+  (`repetition_penalty`): the multiplicative repetition penalty shipped
+  across HuggingFace `transformers`, vLLM, and llama.cpp branches on
+  the *sign of the raw logit* before penalizing a previously-generated
+  token -- but arXiv:2607.09791 proves this makes the result depend on
+  an arbitrary additive shift to the logits, even though softmax itself
+  is exactly shift-invariant. Two logit vectors representing the
+  identical pre-penalty distribution can select different next tokens
+  after an ordinary repetition penalty, purely from where the raw
+  logits happen to sit relative to zero -- not an overflow, underflow,
+  or cancellation bug at all, a distinct "wrong invariant" failure
+  shape shared only with `hll_register`'s fixed-width-shift bug above.
 
 ## What this does
 
-For each of eighteen kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of nineteen kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
-`geometric_mean`, `p2_quantile`),
+`geometric_mean`, `p2_quantile`, `repetition_penalty`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
 `hll_register` are scored at `float64` only, since they audit integer
 codes/register values rather than a dtype-swept float array), on a

@@ -73,6 +73,13 @@ class Fixture:
     # tracks (e.g. 0.5 for the streaming median). None for every other
     # kernel.
     p2_prob: Optional[float] = None
+    # Repetition-penalty strength theta, used only by repetition_penalty
+    # fixtures -- `values` holds the raw logits and the shared `mask`
+    # field (reused from masked_softmax's keep-mask, but meaning
+    # "previously-generated / to-be-penalized" here rather than
+    # "participates in softmax") marks which positions the penalty is
+    # applied to. None for every other kernel.
+    rp_theta: Optional[float] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -1151,6 +1158,74 @@ P2_QUANTILE_FIXTURES = [
     ),
 ]
 
+REPETITION_PENALTY_FIXTURES = [
+    Fixture(
+        "no_penalty_control",
+        [3.0, 1.0, -2.0, -2.0],
+        "Control case: mask marks no token as previously-seen, so the "
+        "penalty branch never fires for any position and this reduces "
+        "to ordinary softmax -- shift-invariant by construction "
+        "regardless of naive vs stable, since neither ever touches the "
+        "sign-branch logic here. Confirms the bug is specific to the "
+        "penalty step itself, not to this kernel's softmax plumbing.",
+        mask=[False, False, False, False],
+        rp_theta=1.3,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "gauge_baseline",
+        [-2.0, -3.0, -10.0, -10.0],
+        "Ordinary logits with token 0 (the current leader) marked as "
+        "previously-generated (mask[0]=True) and penalized at theta="
+        "1.3. Both naive and stable agree on the argmax here (token 0 "
+        "still wins even after penalty), but naive's post-penalty "
+        "probability for token 0 (0.598) already diverges materially "
+        "from the gauge-invariant gold answer (0.712) -- a real "
+        "distortion, just not yet large enough to flip the argmax at "
+        "this particular additive offset.",
+        mask=[True, False, False, False],
+        rp_theta=1.3,
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "gauge_shifted_plus10",
+        [8.0, 7.0, 0.0, 0.0],
+        "The EXACT same underlying distribution as gauge_baseline -- "
+        "every logit shifted by the same +10.0 constant, which "
+        "softmax alone would treat as entirely meaningless (softmax "
+        "is shift-invariant: softmax(x) == softmax(x+c) for any c). "
+        "The headline demonstration: naive_repetition_penalty's "
+        "sign-branch flips (token 0's raw logit crosses from negative "
+        "to positive once shifted), so it divides instead of "
+        "multiplies -- the penalized argmax changes from token 0 to "
+        "token 1, a different next token would be sampled, purely "
+        "because of an arbitrary additive constant with no semantic "
+        "meaning. stable_repetition_penalty (branching on shift-"
+        "invariant log-probabilities instead) produces the identical "
+        "gauge-invariant answer as gauge_baseline, matching the "
+        "gold reference exactly.",
+        mask=[True, False, False, False],
+        rp_theta=1.3,
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "gauge_shifted_minus10",
+        [-12.0, -13.0, -20.0, -20.0],
+        "The same logical distribution again, this time shifted by "
+        "-10.0 instead of +10.0 -- confirms the gauge-dependence bug "
+        "is not a one-directional artifact of positive shifts only. "
+        "naive_repetition_penalty produces yet a THIRD different "
+        "probability vector (all three of gauge_baseline, this "
+        "fixture, and gauge_shifted_plus10 represent the identical "
+        "underlying distribution before penalization), while "
+        "stable_repetition_penalty again reproduces the exact same "
+        "gauge-invariant gold answer as the other two.",
+        mask=[True, False, False, False],
+        rp_theta=1.3,
+        expect_naive_ok=False,
+    ),
+]
+
 
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -1171,6 +1246,7 @@ FIXTURES_BY_KERNEL = {
     "weighted_sampling_key": WEIGHTED_SAMPLING_KEY_FIXTURES,
     "geometric_mean": GEOMETRIC_MEAN_FIXTURES,
     "p2_quantile": P2_QUANTILE_FIXTURES,
+    "repetition_penalty": REPETITION_PENALTY_FIXTURES,
 }
 
 

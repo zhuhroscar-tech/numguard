@@ -515,3 +515,56 @@ def gold_geometric_mean(values: Sequence[float]) -> Decimal:
         total_log = ctx.add(total_log, ctx.ln(x))
     mean_log = ctx.divide(total_log, ctx.create_decimal(len(xs)))
     return ctx.exp(mean_log)
+
+
+def gold_repetition_penalty(values: Sequence[float], seen_mask: Sequence[bool], theta) -> list:
+    """The MATHEMATICALLY CORRECT (gauge-invariant) answer against which
+    both naive_repetition_penalty and stable_repetition_penalty are
+    scored: apply the documented sign-branch penalty to Decimal log-
+    probabilities computed from the exact input logits, at 50-digit
+    precision. Because softmax (and therefore the true log-
+    probabilities) are exactly shift-invariant, this reference produces
+    the identical output distribution regardless of what additive
+    constant the caller's raw logits happen to sit at -- which is the
+    entire property naive_repetition_penalty violates and
+    stable_repetition_penalty preserves. Deliberately NOT built by
+    calling this repo's own naive/stable numpy code (see module
+    docstring): an independent Decimal computation of the same
+    normalize-then-penalize formula that stable_repetition_penalty
+    uses, so a shared bug between the kernel under test and this
+    reference cannot hide behind comparing them only to each other."""
+    ctx = _ctx()
+    xs = _to_decimals(values)
+    m = xs[0]
+    for x in xs[1:]:
+        if x > m:
+            m = x
+    total = ctx.create_decimal(0)
+    exps = []
+    for x in xs:
+        e = ctx.exp(ctx.subtract(x, m))
+        exps.append(e)
+        total = ctx.add(total, e)
+    logz = ctx.add(m, ctx.ln(total))
+    logp = [ctx.subtract(x, logz) for x in xs]
+
+    theta_d = ctx.create_decimal(repr(theta))
+    penalized = []
+    for lp, seen in zip(logp, seen_mask):
+        if seen:
+            if lp > 0:
+                penalized.append(ctx.divide(lp, theta_d))
+            else:
+                penalized.append(ctx.multiply(lp, theta_d))
+        else:
+            penalized.append(lp)
+
+    m2 = penalized[0]
+    for p in penalized[1:]:
+        if p > m2:
+            m2 = p
+    exps2 = [ctx.exp(ctx.subtract(p, m2)) for p in penalized]
+    total2 = ctx.create_decimal(0)
+    for e in exps2:
+        total2 = ctx.add(total2, e)
+    return [ctx.divide(e, total2) for e in exps2]

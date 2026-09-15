@@ -724,9 +724,63 @@ not catastrophic cancellation in a sum (`variance`,
 algorithm's internal bookkeeping* that silently skips a state-transition
 decision and then compounds for the remainder of the stream.
 
+## Repetition penalty
+
+**Textbook definition:** to discourage a language model from repeating
+itself, a repetition penalty multiplicatively rescales the logit of
+each previously-generated token before softmax: if the logit is
+positive, divide it by a penalty strength `theta > 1`; if it is
+non-positive, multiply it by `theta`. This exact form -- branching on
+the *sign of the raw logit* -- is the pattern shipped across the LLM
+inference ecosystem (HuggingFace `transformers`, vLLM, llama.cpp, and,
+per the paper below, "a dozen further engines").
+
+**Naive formula** (`naive_repetition_penalty`): apply the sign-branch
+penalty directly to the raw logits, then softmax. This is a real,
+documented bug, not a constructed one: Hollows, P. (2026), "Gauge
+dependence and structured-output corruption in sign-branched
+repetition penalties: measurements across models, inference stacks,
+and alternative repetition controls" (arXiv:2607.09791) proves that
+this pattern is **gauge-dependent** -- it depends on an arbitrary
+additive constant added to every logit, even though softmax itself is
+mathematically shift-invariant (`softmax(x) == softmax(x + c)` for any
+constant `c`, since the added `exp(c)` factor cancels between numerator
+and denominator). Two logit vectors representing the *identical*
+pre-penalty distribution (one is the other plus a constant shift) can
+select different next tokens after the penalty is applied, purely
+because of where the unpenalized logits happen to sit relative to
+zero. The paper reports this is not a corner case: gpt2's own
+per-position logits are bimodal (deciles spanning roughly -230 to
++150), so ordinary generation already produces the sign-straddling
+condition the bug depends on, and its own StarCoder2-7B HumanEval
+experiment demonstrates real greedy-decode token flips from exactly
+this mechanism. This repository's own `gauge_shifted_plus10` and
+`gauge_shifted_minus10` fixtures reproduce the identical shape: three
+logit vectors representing one underlying distribution, shifted by
+`0`, `+10`, and `-10`, that `naive_repetition_penalty` maps to three
+*different* output distributions (and, in the `+10`/`-10` cases, a
+different argmax than the unshifted baseline).
+
+**Stable formula** (`stable_repetition_penalty`): apply the identical
+sign-branch/divide-multiply penalty to **log-probabilities**
+(`logit - logsumexp(logits)`) instead of raw logits. Subtracting the
+log-partition-function makes the quantity being branched on
+shift-invariant by construction -- an additive shift to every input
+logit shifts `logsumexp` by the same constant, which cancels exactly
+before the branch ever runs -- so the resulting penalized distribution
+depends only on the actual (gauge-invariant) probabilities, never on
+the arbitrary additive gauge of the unpenalized logits. This mirrors a
+fix direction the paper itself notes already exists inside the same
+library that ships the bug: "HuggingFace's beam search has applied its
+entire logits-processor chain, repetition penalty included, to
+log-probabilities since at least transformers v4.0.0", while greedy
+and sampled decoding apply the raw (gauge-dependent) form -- the same
+codebase already contains both the buggy and the fixed behavior,
+selected only by which decoding strategy happens to be in use.
+
 ## Independent ground truth
 
-All eighteen derivations above are cross-checked in this repository
+All nineteen derivations above are cross-checked in this repository
 against an independent implementation (`reference.py`) that uses
 Python's arbitrary-precision `decimal.Decimal` (50 significant digits)
 evaluated directly from the mathematical definitions -- not derived
@@ -821,3 +875,14 @@ tests, not decorative claims.
   independently corroborated in `numpy/numpy#14985` ("using the
   formulation `prod(x)**(1/count)` can overflow unnecessarily... that
   can be avoided by working with logarithms").
+- Hollows, P. (2026), "Gauge dependence and structured-output
+  corruption in sign-branched repetition penalties: measurements
+  across models, inference stacks, and alternative repetition
+  controls" (arXiv:2607.09791) -- proves the sign-branched
+  multiplicative repetition penalty shipped in HuggingFace
+  `transformers`, vLLM, and llama.cpp is gauge-dependent (violates
+  softmax's shift-invariance), with a StarCoder2-7B HumanEval
+  measurement of real greedy-decode token flips from this mechanism,
+  the bug `naive_repetition_penalty` reproduces and
+  `stable_repetition_penalty` (branching on log-probabilities instead
+  of raw logits) resolves.

@@ -987,6 +987,96 @@ def stable_geometric_mean(values, dtype: str) -> float:
         return float(np.exp(log_mean))
 
 
+# --- repetition penalty (sign-branched gauge dependence) ----------------
+#
+# Real-world bug, not a constructed one: arXiv:2607.09791 ("Gauge
+# dependence and structured-output corruption in sign-branched
+# repetition penalties") documents that the multiplicative repetition
+# penalty shipped across the LLM inference ecosystem -- HuggingFace
+# transformers, vLLM, llama.cpp, and "a dozen further engines" per the
+# paper -- branches on the *sign* of each raw logit before penalizing a
+# previously-seen token: divide by theta if the logit is positive,
+# multiply by theta if it is non-positive. This makes the penalized
+# result depend on which arbitrary additive constant the model's logits
+# happen to sit at, even though softmax itself is exactly shift-
+# invariant (softmax(x) == softmax(x + c) for any constant c, since the
+# added exp(c) factor cancels between numerator and denominator). Two
+# logit vectors that represent the *identical* underlying probability
+# distribution before penalization (one is just the other shifted by a
+# constant -- a difference every downstream softmax treats as
+# meaningless) can select different next tokens after an ordinary
+# repetition penalty is applied, purely as an artifact of where the
+# unpenalized logits happened to sit relative to zero. This is not a
+# hypothetical: gpt2's own per-position logits are bimodal (the paper
+# reports deciles spanning roughly -230 to +150), so ordinary generation
+# already produces exactly the straddling-zero condition this bug
+# depends on, and the paper's own StarCoder2-7B HumanEval experiment
+# demonstrates real greedy-decode token flips from this mechanism.
+#
+# The naive formulation below reproduces the documented shape exactly:
+# sign-branch on the raw logit. The stable formulation applies the
+# identical branch/divide-multiply logic to log-probabilities (logit
+# minus the log-partition-function logsumexp(logits)) instead of raw
+# logits -- log-probabilities are themselves shift-invariant by
+# construction (subtracting logsumexp cancels any additive shift to the
+# input before the branch ever runs), so the penalized distribution no
+# longer depends on the arbitrary additive gauge of the input logits.
+# This is the same fix direction the paper itself notes already exists
+# inside HuggingFace: "beam search has applied its entire logits-
+# processor chain, repetition penalty included, to log-probabilities
+# since at least transformers v4.0.0", while greedy/sampled decoding
+# apply the raw (gauge-dependent) form -- i.e. the same library already
+# ships both the buggy and the fixed behavior, selected only by which
+# decoding strategy happens to be in use.
+
+
+def naive_repetition_penalty(values, seen_mask, theta: float, dtype):
+    """Sign-branch on the raw logit -- the documented HF/vLLM/llama.cpp
+    pattern: `logit/theta` if positive, `logit*theta` otherwise, applied
+    only to positions in `seen_mask` (previously-generated tokens),
+    followed by an ordinary softmax. Gauge-dependent: shifting every
+    input logit by the same additive constant (which leaves the
+    pre-penalty distribution identical) can change which branch fires
+    for a penalized position near zero, and therefore change the
+    resulting (post-penalty, post-softmax) distribution and argmax.
+    """
+    x = _arr(values, dtype).astype(np.float64)
+    keep = np.asarray(seen_mask, dtype=bool)
+    out = x.copy()
+    for i in range(len(out)):
+        if keep[i]:
+            out[i] = out[i] / theta if out[i] > 0 else out[i] * theta
+    with np.errstate(over="ignore", invalid="ignore"):
+        m = np.max(out)
+        e = np.exp(out - m)
+        return (e / np.sum(e)).astype(DTYPES[dtype])
+
+
+def stable_repetition_penalty(values, seen_mask, theta: float, dtype):
+    """Apply the identical sign-branch/divide-multiply penalty to
+    log-probabilities (logit - logsumexp(logits)) instead of raw
+    logits. Subtracting the log-partition-function makes the quantity
+    being branched on shift-invariant by construction (an additive
+    shift to every input logit shifts logsumexp by the same constant,
+    which cancels exactly), so the resulting penalized distribution no
+    longer depends on the arbitrary additive gauge of the unpenalized
+    logits -- only on the actual (gauge-invariant) probabilities.
+    """
+    x = _arr(values, dtype).astype(np.float64)
+    keep = np.asarray(seen_mask, dtype=bool)
+    with np.errstate(over="ignore", invalid="ignore"):
+        m = np.max(x)
+        logz = m + np.log(np.sum(np.exp(x - m)))
+        logp = x - logz
+        out = logp.copy()
+        for i in range(len(out)):
+            if keep[i]:
+                out[i] = out[i] / theta if out[i] > 0 else out[i] * theta
+        m2 = np.max(out)
+        e = np.exp(out - m2)
+        return (e / np.sum(e)).astype(DTYPES[dtype])
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1006,4 +1096,5 @@ KERNELS = {
     "weighted_sampling_key": (naive_weighted_sampling_key, stable_weighted_sampling_key),
     "geometric_mean": (naive_geometric_mean, stable_geometric_mean),
     "p2_quantile": (naive_p2_quantile, stable_p2_quantile),
+    "repetition_penalty": (naive_repetition_penalty, stable_repetition_penalty),
 }

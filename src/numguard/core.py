@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -171,6 +171,10 @@ def _gold_rope_cos(fixture: Fixture) -> list:
     return reference.gold_rope_cos(fixture.values, fixture.freq)
 
 
+def _gold_repetition_penalty(fixture: Fixture) -> list:
+    return reference.gold_repetition_penalty(fixture.values, fixture.mask, fixture.rp_theta)
+
+
 # Kernels whose naive/stable implementations take extra positional
 # arguments beyond (values, dtype) -- masked_softmax additionally takes
 # the boolean keep-mask. Every other array-valued kernel takes exactly
@@ -179,6 +183,7 @@ def _gold_rope_cos(fixture: Fixture) -> list:
 EXTRA_ARGS = {
     "masked_softmax": lambda fixture: (fixture.mask,),
     "rope_cos": lambda fixture: (fixture.freq,),
+    "repetition_penalty": lambda fixture: (fixture.mask, fixture.rp_theta),
 }
 
 
@@ -196,6 +201,7 @@ ARRAY_VALUED_GOLD = {
     "online_softmax": _gold_online_softmax,
     "masked_softmax": _gold_masked_softmax,
     "rope_cos": _gold_rope_cos,
+    "repetition_penalty": _gold_repetition_penalty,
 }
 
 

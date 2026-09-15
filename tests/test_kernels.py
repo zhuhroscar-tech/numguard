@@ -932,3 +932,75 @@ class TestP2QuantileDrift:
         gold = float(reference.gold_p2_quantile(values, 0.5))
         assert naive == pytest.approx(gold, rel=1e-9)
         assert stable == pytest.approx(gold, rel=1e-9)
+
+
+class TestRepetitionPenaltyGaugeDependence:
+    """naive_repetition_penalty sign-branches on the raw logit before
+    penalizing a previously-seen token -- gauge-DEPENDENT, since softmax
+    (and log-probability) is exactly shift-invariant but this sign
+    branch is not. stable_repetition_penalty branches on log-
+    probabilities instead, which are shift-invariant by construction.
+    arXiv:2607.09791 documents this in HuggingFace/vLLM/llama.cpp."""
+
+    THETA = 1.3
+    MASK = [True, False, False, False]
+    BASELINE = [-2.0, -3.0, -10.0, -10.0]
+    SHIFTED_PLUS10 = [8.0, 7.0, 0.0, 0.0]
+    SHIFTED_MINUS10 = [-12.0, -13.0, -20.0, -20.0]
+
+    def test_stable_is_shift_invariant_across_all_three_gauges(self):
+        # This is the core correctness property: three logit vectors
+        # representing the identical distribution (differing only by
+        # an additive constant with no softmax-visible meaning) must
+        # produce IDENTICAL post-penalty distributions under a correct
+        # implementation.
+        r1 = kernels.stable_repetition_penalty(self.BASELINE, self.MASK, self.THETA, "float64")
+        r2 = kernels.stable_repetition_penalty(self.SHIFTED_PLUS10, self.MASK, self.THETA, "float64")
+        r3 = kernels.stable_repetition_penalty(self.SHIFTED_MINUS10, self.MASK, self.THETA, "float64")
+        for a, b in ((r1, r2), (r1, r3)):
+            for x, y in zip(a, b):
+                assert float(x) == pytest.approx(float(y), rel=1e-9, abs=1e-12)
+
+    def test_naive_is_gauge_dependent_argmax_flips(self):
+        # The headline bug: naive's sign-branch flips between the
+        # baseline and the +10-shifted input (token 0's raw logit
+        # crosses zero), changing which token would actually be
+        # sampled greedily -- a real behavioral difference, not just a
+        # numerical wobble. This assertion would FAIL against a
+        # (hypothetical) gauge-invariant naive implementation.
+        base = kernels.naive_repetition_penalty(self.BASELINE, self.MASK, self.THETA, "float64")
+        shifted = kernels.naive_repetition_penalty(self.SHIFTED_PLUS10, self.MASK, self.THETA, "float64")
+        assert int(base.argmax()) == 0
+        assert int(shifted.argmax()) == 1
+        assert int(base.argmax()) != int(shifted.argmax())
+
+    def test_naive_disagrees_with_gauge_invariant_gold_at_baseline(self):
+        # Even at the baseline gauge (no shift applied at all), naive's
+        # probability for the leading token is already measurably
+        # wrong relative to the independent Decimal gold reference --
+        # this is not purely an "argmax flip" story, the intermediate
+        # probabilities are distorted too.
+        gold = [float(g) for g in reference.gold_repetition_penalty(self.BASELINE, self.MASK, self.THETA)]
+        naive = kernels.naive_repetition_penalty(self.BASELINE, self.MASK, self.THETA, "float64").tolist()
+        assert abs(naive[0] - gold[0]) / gold[0] > 0.10
+
+    def test_stable_matches_gold_exactly_at_every_gauge(self):
+        gold = [float(g) for g in reference.gold_repetition_penalty(self.BASELINE, self.MASK, self.THETA)]
+        for logits in (self.BASELINE, self.SHIFTED_PLUS10, self.SHIFTED_MINUS10):
+            stable = kernels.stable_repetition_penalty(logits, self.MASK, self.THETA, "float64").tolist()
+            for s, g in zip(stable, gold):
+                assert s == pytest.approx(g, rel=1e-9, abs=1e-12)
+
+    def test_no_penalty_control_all_agree_and_are_shift_invariant(self):
+        # Control: with an all-False mask (nothing penalized), this
+        # reduces to plain softmax, which every formulation (naive,
+        # stable, gold) already agrees is shift-invariant.
+        no_mask = [False, False, False, False]
+        for shift in (0.0, 25.0, -25.0):
+            logits = [x + shift for x in self.BASELINE]
+            naive = kernels.naive_repetition_penalty(logits, no_mask, self.THETA, "float64").tolist()
+            stable = kernels.stable_repetition_penalty(logits, no_mask, self.THETA, "float64").tolist()
+            gold = [float(g) for g in reference.gold_repetition_penalty(logits, no_mask, self.THETA)]
+            for n, s, g in zip(naive, stable, gold):
+                assert n == pytest.approx(g, rel=1e-9, abs=1e-12)
+                assert s == pytest.approx(g, rel=1e-9, abs=1e-12)
