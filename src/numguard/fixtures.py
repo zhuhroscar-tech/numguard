@@ -980,6 +980,78 @@ WEIGHTED_SAMPLING_KEY_FIXTURES = [
 ]
 
 
+GEOMETRIC_MEAN_FIXTURES = [
+    Fixture(
+        "everyday_two_values",
+        [2.0, 8.0],
+        "Textbook example (true geometric mean = 4.0 exactly) -- "
+        "baseline agreement case with nothing to overflow or "
+        "underflow.",
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "everyday_mixed_scale",
+        [4.0, 1.0, 1.0 / 32],
+        "Ordinary small values spanning a couple of orders of "
+        "magnitude (true geometric mean = 0.5 exactly) -- still a "
+        "control case, included to confirm neither formula's guard "
+        "logic corrupts an easy, non-adversarial input.",
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float16_overflow",
+        [10.0] * 15,
+        "float16's max representable value is ~65504. The true "
+        "geometric mean here is exactly 10.0, but the naive formula's "
+        "intermediate raw product (10**15) overflows float16 to +inf "
+        "long before the 15th root is ever taken -- inf**(1/15) is "
+        "still +inf, silently reporting an infinite average of ordinary "
+        "finite values. This is exactly the shape scipy.stats.gmean's "
+        "own issue tracker (gh-1053/Trac#526, \"gmean cannot handle "
+        "large numbers\") describes as motivating its log-space fix.",
+        dtypes=("float16",),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "float32_overflow",
+        [1000.0] * 40,
+        "float32's max representable value is ~3.4e38. The true "
+        "geometric mean is exactly 1000.0, but the naive raw product "
+        "(1000**40 = 1e120) overflows float32 to +inf long before the "
+        "40th root is taken, while the log-space stable form (working "
+        "with log(1000)*40 ~= 276, an ordinary float32 magnitude) "
+        "recovers the correct answer to within float32 precision.",
+        dtypes=("float32",),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "float32_underflow",
+        [0.001] * 40,
+        "The symmetric underflow case: true geometric mean is exactly "
+        "0.001, but the naive raw product (0.001**40 = 1e-120) "
+        "underflows float32's smallest representable positive value "
+        "(~1.2e-38) to exactly 0.0 long before the 40th root is taken, "
+        "silently reporting zero for a collection of ordinary nonzero "
+        "values. The log-space stable form never forms this "
+        "intermediate at all.",
+        dtypes=("float32",),
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "float64_overflow",
+        [10.0] * 400,
+        "Even float64's much wider range (~1.8e308) is not immune: "
+        "400 copies of an ordinary value (true geometric mean exactly "
+        "10.0) still overflow the raw product (10**400) to +inf, "
+        "confirming this is a fundamental evaluation-order defect of "
+        "the naive formula rather than a narrow low-precision-dtype "
+        "edge case.",
+        dtypes=("float64",),
+        expect_naive_ok=False,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -997,6 +1069,7 @@ FIXTURES_BY_KERNEL = {
     "focal_loss_grad": FOCAL_LOSS_GRAD_FIXTURES,
     "pearson_correlation": PEARSON_CORRELATION_FIXTURES,
     "weighted_sampling_key": WEIGHTED_SAMPLING_KEY_FIXTURES,
+    "geometric_mean": GEOMETRIC_MEAN_FIXTURES,
 }
 
 

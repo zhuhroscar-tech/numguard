@@ -146,10 +146,11 @@ a blog post or a framework-internal function you have to trust blindly.
 
 ## What this does
 
-For each of sixteen kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of seventeen kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
-`focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`),
+`focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
+`geometric_mean`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
 `hll_register` are scored at `float64` only, since they audit integer
 codes/register values rather than a dtype-swept float array), on a

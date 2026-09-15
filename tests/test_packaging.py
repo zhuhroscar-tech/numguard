@@ -105,7 +105,8 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "focal_loss_grad": "Sigmoid focal loss gradient",
         "pearson_correlation": "Pearson correlation coefficient",
         "weighted_sampling_key": "Weighted reservoir-sampling comparison key",
-    }
+        "geometric_mean": "Geometric mean",
+        }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (
             f"kernel {kernel!r} has no known doc-section alias mapping in "

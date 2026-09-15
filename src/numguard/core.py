@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -120,6 +120,9 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
         (weight,) = fixture.q_values
         computed = fn(u, weight, dtype)
         gold = reference.gold_weighted_sampling_key(u, weight)
+    elif kernel == "geometric_mean":
+        computed = fn(fixture.values, dtype)
+        gold = reference.gold_geometric_mean(fixture.values)
     else:
         raise ValueError(f"not a scalar kernel: {kernel}")
 

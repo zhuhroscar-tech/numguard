@@ -810,6 +810,48 @@ def stable_weighted_sampling_key(u: float, weight: float, dtype: str) -> float:
         return float(np.log(u_v) / w_v)
 
 
+# --- geometric mean ------------------------------------------------------
+
+def naive_geometric_mean(values, dtype: str) -> float:
+    """prod(x)**(1/n) -- the literal textbook geometric-mean formula:
+    multiply every value together first, then take the n-th root. This
+    is exactly the shape flagged in scipy.stats.gmean's own history
+    (scipy gh-1053 / Trac#526, "gmean cannot handle large numbers"):
+    multiplying even a modest number of values whose magnitude is above
+    1 grows the intermediate product past a dtype's max representable
+    value long before the true (much smaller, order-1) n-th root is
+    reached, overflowing to +inf; symmetrically, multiplying many
+    values below 1 underflows the intermediate product to exactly 0.0
+    long before the true root is computed, silently returning 0
+    instead of a small-but-nonzero geometric mean. Both failures are
+    pure intermediate-representation artifacts of the evaluation
+    order, not of the mathematical quantity itself (which is always
+    finite and of the same order of magnitude as a typical input)."""
+    x = _arr(values, dtype)
+    n = len(x)
+    dt = DTYPES[dtype]
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        prod = np.prod(x)
+        return float(prod ** (dt(1.0) / dt(n)))
+
+
+def stable_geometric_mean(values, dtype: str) -> float:
+    """exp(mean(log(x))) -- the standard log-space fix (the same one
+    scipy adopted in the gh-1053 fix and that R's own geometric-mean
+    recipes use): take the log of each value first (bringing every
+    term down to an O(1)-scale exponent regardless of the input's raw
+    magnitude), average those logs, and only then exponentiate once at
+    the very end. No intermediate ever approaches a dtype's overflow
+    or underflow boundary the way the raw running product does, so the
+    result stays finite and accurate across the same input range where
+    the naive formula silently returns +inf or exactly 0."""
+    x = _arr(values, dtype)
+    dt = DTYPES[dtype]
+    with np.errstate(over="ignore", under="ignore", invalid="ignore", divide="ignore"):
+        log_mean = np.mean(np.log(x).astype(dt))
+        return float(np.exp(log_mean))
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -827,4 +869,5 @@ KERNELS = {
     "focal_loss_grad": (naive_focal_loss_grad, stable_focal_loss_grad),
     "pearson_correlation": (naive_pearson_correlation, stable_pearson_correlation),
     "weighted_sampling_key": (naive_weighted_sampling_key, stable_weighted_sampling_key),
+    "geometric_mean": (naive_geometric_mean, stable_geometric_mean),
 }

@@ -392,3 +392,23 @@ def gold_weighted_sampling_key(u: float, weight: float) -> Decimal:
     u_d = ctx.create_decimal(repr(float(u)))
     w_d = ctx.create_decimal(repr(float(weight)))
     return ctx.divide(ctx.ln(u_d), w_d)
+
+
+def gold_geometric_mean(values: Sequence[float]) -> Decimal:
+    """(prod(x))**(1/n) computed algebraically as exp(mean(ln(x))) in
+    50-digit Decimal arithmetic -- mathematically identical to both
+    naive_geometric_mean and stable_geometric_mean (they differ only in
+    floating-point evaluation ORDER: raw running product vs log-space
+    accumulation, not in the underlying formula), so this reference is
+    independent of which intermediate a kernel under test chooses to
+    materialize. Decimal's 50-digit precision and unbounded exponent
+    range mean this reference never overflows/underflows the way the
+    naive float16/32/64 kernel does, giving a true ground truth for
+    exactly the input ranges that break the naive formula."""
+    ctx = _ctx()
+    xs = _to_decimals(values)
+    total_log = ctx.create_decimal(0)
+    for x in xs:
+        total_log = ctx.add(total_log, ctx.ln(x))
+    mean_log = ctx.divide(total_log, ctx.create_decimal(len(xs)))
+    return ctx.exp(mean_log)

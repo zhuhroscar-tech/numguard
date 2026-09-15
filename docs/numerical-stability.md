@@ -629,9 +629,53 @@ the same distribution as random sampling without replacement... To
 increase numerical stability, `log(U)/w_i` is computed instead; the
 log transform does not change the order statistic."
 
+## Geometric mean
+
+**Textbook definition:** the geometric mean of `n` positive values is
+`(prod(x_i))**(1/n)` -- the appropriate average for ratios, growth
+rates, and normalized scores (CAGR, index numbers, the UN Human
+Development Index since 2010), where the arithmetic mean systematically
+over-weights outliers on a multiplicative scale.
+
+**Naive formula** (`naive_geometric_mean`): the literal textbook
+formula -- multiply every value together first (`prod(x)`), then take
+the `n`-th root of that single running product. `scipy.stats.gmean`'s
+own issue tracker documents exactly this failure under its original
+name (`scipy/scipy#1053` / Trac#526, "gmean cannot handle large
+numbers"): for values whose magnitude is above 1, the raw running
+product grows past a dtype's max representable value long before the
+much smaller (order-1-scale) `n`-th root is ever taken, overflowing to
+`+inf` -- silently reporting an infinite average of entirely ordinary,
+finite inputs. Symmetrically, for values below 1, the running product
+underflows to exactly `0.0` long before the true root is computed,
+silently reporting zero instead of a small but definitely nonzero
+geometric mean. Neither failure depends on any single input being
+unusually large or small -- accumulating enough ordinary-magnitude
+terms is sufficient, as this repo's `very_large_offset`-style fixtures
+demonstrate at all three dtypes (`float16`, `float32`, and even
+`float64` given enough terms).
+
+**Stable formula** (`stable_geometric_mean`): the standard log-space
+fix, the same one `scipy.stats.gmean`'s bug report above settled on and
+that every "geometric mean from scratch" reference implementation
+teaches: take the log of each value first (collapsing every term to an
+`O(1)`-scale exponent regardless of the input's raw magnitude), average
+those logs, and exponentiate only once at the very end --
+`exp(mean(log(x)))`. No intermediate ever approaches a dtype's overflow
+or underflow boundary the way the raw running product does, because
+the log transform turns a product-then-root computation (whose
+intermediate can grow or shrink combinatorially with `n`) into a
+sum-then-divide-then-exponentiate one (whose intermediate is always
+just the *average* magnitude of the inputs' logs, an `O(1)`-scale
+quantity independent of `n`). This is the identical log-space
+substitution this repo's `logsumexp` and `weighted_sampling_key`
+kernels already use for the same underlying reason: move an
+overflow/underflow-prone power or product operation into log space,
+where it becomes an ordinary, boundedly-scaled sum.
+
 ## Independent ground truth
 
-All sixteen derivations above are cross-checked in this repository
+All seventeen derivations above are cross-checked in this repository
 against an independent implementation (`reference.py`) that uses
 Python's arbitrary-precision `decimal.Decimal` (50 significant digits)
 evaluated directly from the mathematical definitions -- not derived
@@ -719,3 +763,10 @@ tests, not decorative claims.
   the mean-centered (but not norm-divided) form of Pearson's r returns
   inconsistent `NaN`/`+-1` for exactly-constant columns, motivating
   this kernel's explicit zero-variance guard.
+- `scipy/scipy#1053` (Trac#526), "scipy.stats.gmean cannot handle large
+  numbers" -- the real-world bug report that drove `scipy.stats.gmean`
+  to switch from the literal `prod(x)**(1/n)` formula to the log-space
+  `exp(mean(log(x)))` form `stable_geometric_mean` reproduces; also
+  independently corroborated in `numpy/numpy#14985` ("using the
+  formulation `prod(x)**(1/count)` can overflow unnecessarily... that
+  can be avoided by working with logarithms").

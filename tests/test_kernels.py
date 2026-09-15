@@ -787,3 +787,51 @@ class TestWeightedSamplingKeyUnderflow:
         stable = kernels.stable_weighted_sampling_key(0.5, 0.05, "float64")
         assert math.isfinite(naive)
         assert naive == pytest.approx(stable, rel=1e-6)
+
+
+class TestGeometricMeanOverflow:
+    """naive_geometric_mean forms the raw product prod(x) before taking
+    the n-th root; stable_geometric_mean works in log-space
+    (exp(mean(log(x)))) instead -- mirrors this repo's other naive/
+    stable pairs (logsumexp, weighted_sampling_key) that move an
+    overflow/underflow-prone operation into log space."""
+
+    def test_naive_overflows_stable_survives_float16(self):
+        naive = kernels.naive_geometric_mean([10.0] * 15, "float16")
+        stable = kernels.stable_geometric_mean([10.0] * 15, "float16")
+        assert math.isinf(naive) and naive > 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(10.0, rel=1e-2)
+
+    def test_naive_overflows_stable_survives_float32(self):
+        naive = kernels.naive_geometric_mean([1000.0] * 40, "float32")
+        stable = kernels.stable_geometric_mean([1000.0] * 40, "float32")
+        assert math.isinf(naive) and naive > 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(1000.0, rel=1e-3)
+
+    def test_naive_underflows_stable_survives_float32(self):
+        naive = kernels.naive_geometric_mean([0.001] * 40, "float32")
+        stable = kernels.stable_geometric_mean([0.001] * 40, "float32")
+        assert naive == 0.0
+        assert math.isfinite(stable) and stable > 0
+        assert stable == pytest.approx(0.001, rel=1e-3)
+
+    def test_naive_overflows_stable_survives_float64(self):
+        # Even float64's much wider range is not immune: 400 copies of
+        # an ordinary value still overflow the raw product.
+        naive = kernels.naive_geometric_mean([10.0] * 400, "float64")
+        stable = kernels.stable_geometric_mean([10.0] * 400, "float64")
+        assert math.isinf(naive) and naive > 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(10.0, rel=1e-9)
+
+    def test_both_agree_on_everyday_values(self):
+        # Control: an ordinary two-value case (true gmean = 4.0
+        # exactly) never approaches the overflow/underflow boundary,
+        # so both formulas should agree closely.
+        naive = kernels.naive_geometric_mean([2.0, 8.0], "float64")
+        stable = kernels.stable_geometric_mean([2.0, 8.0], "float64")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(stable, rel=1e-9)
+        assert naive == pytest.approx(4.0, rel=1e-9)
