@@ -673,9 +673,60 @@ kernels already use for the same underlying reason: move an
 overflow/underflow-prone power or product operation into log space,
 where it becomes an ordinary, boundedly-scaled sum.
 
+## P^2 (Piecewise-Parabolic) streaming quantile estimator
+
+**Textbook definition:** the P^2 algorithm (Jain & Chlamtac, *The P^2
+algorithm for dynamic calculation of quantiles and histograms without
+storing observations*, CACM 28(10), 1985) estimates a target quantile
+(e.g. the streaming median, or a tail latency percentile) from a data
+stream using only five running "marker" heights/positions -- O(1)
+memory regardless of stream length, the classic choice for telemetry
+and monitoring systems that cannot afford to store every observation.
+After the first five values initialize the markers, each new
+observation updates one marker's *desired* position `n'_i` and, when it
+has drifted far enough from the marker's *actual* integer position
+`n_i`, triggers a piecewise-parabolic (or linear, as a fallback)
+interpolation step that moves the marker.
+
+**Naive formula** (`naive_p2_quantile`): the original paper's own
+suggested optimization -- maintain each marker's desired position via a
+per-observation accumulated increment, `ns[i] += dns[i]` where `dns[i]`
+is a fixed per-marker constant computed once at initialization ("to
+reduce CPU overhead" versus recomputing from scratch). This is a real,
+author-documented bug, not a constructed one: GitHub issue
+`AndreyAkinshin/perfolizer#8` ("P2QuantileEstimator rounding issue"),
+filed against Andrey Akinshin's `perfolizer` benchmarking-statistics
+library, reports and the library's own maintainer confirms that this
+accumulation drifts under ordinary floating-point rounding -- a
+quantity that should land exactly on an integer marker boundary (e.g.
+`6.0` after enough observations at `p=0.6`) instead lands a few ULPs
+off (`5.999999994`), so the `d >= 1` / `d <= -1` marker-adjustment
+trigger silently fails to fire when it should have. Because the
+marker's *position* bookkeeping (not just one output value) is now
+wrong, every subsequent observation's parabolic/linear interpolation
+computes from a stale marker position -- the error compounds for the
+rest of the stream rather than resetting each step. This repository's
+own `uniform_stream_p10_drift` fixture reproduces a 4-7% relative error
+across float16/float32/float64 from exactly this mechanism, and
+`sine_stream_p35_drift` reproduces a deterministic, hand-reviewable
+~2.9% relative error at float64 with a fixed (no-RNG) input.
+
+**Stable formula** (`stable_p2_quantile`): the author's own published
+fix -- recompute each marker's desired position fresh from the running
+observation count every step (`ns[i] = count * p_i`, no `dns` array
+ever materialized), documented by the same `perfolizer` maintainer to
+be simultaneously *more* accurate (no accumulated rounding drift) and
+*faster* (one fewer array to maintain). This is a different mechanism
+from every other kernel in this repository: not an overflow/underflow
+in a single expression (`geometric_mean`, `weighted_sampling_key`) and
+not catastrophic cancellation in a sum (`variance`,
+`pearson_correlation`, `sum`), but drift in a *stateful streaming
+algorithm's internal bookkeeping* that silently skips a state-transition
+decision and then compounds for the remainder of the stream.
+
 ## Independent ground truth
 
-All seventeen derivations above are cross-checked in this repository
+All eighteen derivations above are cross-checked in this repository
 against an independent implementation (`reference.py`) that uses
 Python's arbitrary-precision `decimal.Decimal` (50 significant digits)
 evaluated directly from the mathematical definitions -- not derived

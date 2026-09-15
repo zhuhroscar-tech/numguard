@@ -143,14 +143,29 @@ a blog post or a framework-internal function you have to trust blindly.
   large-cardinality bug report and Druid's sparse-mode register-overflow
   issue. This is a different bug class again: fixed-width integer
   overflow, not float precision or quantization bookkeeping.
+- **P^2 streaming quantile estimator has a stateful-drift failure mode**
+  (`p2_quantile`): the P^2 algorithm (Jain & Chlamtac, CACM 1985) tracks
+  a running median/quantile in O(1) memory without ever storing the
+  input stream. Its own paper suggests maintaining each marker's desired
+  position via a per-step accumulated increment (`ns[i] += dns[i]`) "to
+  reduce CPU overhead" -- but that accumulation drifts under floating-
+  point rounding, exactly the real bug reported against and fixed in
+  Andrey Akinshin's `perfolizer` library (GitHub issue
+  AndreyAkinshin/perfolizer#8): a value that should land exactly on an
+  integer marker boundary lands a few ULPs off instead, silently
+  deferring a marker adjustment that should have fired and corrupting
+  the estimator's internal state for the rest of the stream. This is a
+  different bug class from every kernel above: drift in a *stateful*
+  algorithm's internal bookkeeping across many steps, not a single
+  expression's overflow/underflow/cancellation.
 
 ## What this does
 
-For each of seventeen kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of eighteen kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
-`geometric_mean`),
+`geometric_mean`, `p2_quantile`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add` and
 `hll_register` are scored at `float64` only, since they audit integer
 codes/register values rather than a dtype-swept float array), on a

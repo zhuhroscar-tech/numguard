@@ -810,6 +810,141 @@ def stable_weighted_sampling_key(u: float, weight: float, dtype: str) -> float:
         return float(np.log(u_v) / w_v)
 
 
+# --- P^2 streaming quantile estimator (marker-position bookkeeping) ------
+#
+# Real, author-documented bug, not a constructed one: the P^2 (Piecewise-
+# Parabolic) algorithm (Jain & Chlamtac, CACM 1985) is the classic O(1)-
+# memory streaming/online quantile estimator -- it never stores the input
+# stream, only five running "marker" positions/heights. The original
+# paper's own pseudocode suggests maintaining each marker's *desired*
+# position n'_i via a running increment (`dns[i]`, a per-marker constant
+# added once per observation) "to reduce CPU overhead" rather than
+# recomputing n'_i = count * p_i from scratch every step. Andrey Akinshin
+# (maintainer of the perfolizer benchmarking-statistics library) received
+# and confirmed a real bug report on exactly this (GitHub issue
+# AndreyAkinshin/perfolizer#8, "P2QuantileEstimator rounding issue"): the
+# repeated `ns[i] += dns[i]` accumulation drifts under floating-point
+# rounding (e.g. a quantity that should land exactly on an integer marker
+# boundary like 5.999999994 instead of 6.0), silently deferring a marker
+# adjustment that should have fired -- corrupting the estimator's internal
+# state for the rest of the stream, not just one output value. The fix
+# (recompute each `ns[i]` fresh from `count` every observation, never
+# accumulating) is documented by the same author to be simultaneously
+# *more* accurate and *faster* (no `dns` array to maintain). This is a
+# distinct mechanism from every other kernel in this file: not an
+# overflow/underflow in a single expression (geometric_mean,
+# weighted_sampling_key) and not catastrophic cancellation in a sum
+# (variance, pearson_correlation, sum) -- it is accumulator drift in a
+# streaming algorithm's *internal bookkeeping state*, which then silently
+# skips a marker-adjustment decision for the remainder of the stream.
+
+
+def _p2_quantile(values, prob, dtype: str, *, recompute_ns: bool) -> float:
+    dt = DTYPES[dtype]
+    with np.errstate(over="ignore", invalid="ignore"):
+        p = dt(prob)
+        q = [dt(0.0)] * 5
+        n = [0, 0, 0, 0, 0]
+        ns = [dt(0.0)] * 5
+        dns = [dt(0.0)] * 5
+        count = 0
+
+        def parabolic(i: int, d: int) -> float:
+            d_v = dt(d)
+            n_ip1_ip1 = dt(float(n[i + 1] - n[i - 1]))
+            term_a = dt(dt(float(n[i] - n[i - 1] + d)) * dt(q[i + 1] - q[i]) / dt(float(n[i + 1] - n[i])))
+            term_b = dt(dt(float(n[i + 1] - n[i] - d)) * dt(q[i] - q[i - 1]) / dt(float(n[i] - n[i - 1])))
+            return float(dt(q[i] + dt(d_v / n_ip1_ip1) * dt(term_a + term_b)))
+
+        def linear(i: int, d: int) -> float:
+            return float(dt(q[i] + dt(dt(float(d)) * dt(q[i + d] - q[i]) / dt(float(n[i + d] - n[i])))))
+
+        for raw in values:
+            x = dt(raw)
+            if count < 5:
+                q[count] = x
+                count += 1
+                if count == 5:
+                    q = sorted(q)
+                    n = [0, 1, 2, 3, 4]
+                    two, four, one = dt(2.0), dt(4.0), dt(1.0)
+                    ns[0] = dt(0.0)
+                    ns[1] = dt(two * p)
+                    ns[2] = dt(four * p)
+                    ns[3] = dt(two + dt(two * p))
+                    ns[4] = dt(4.0)
+                    if not recompute_ns:
+                        dns[0] = dt(0.0)
+                        dns[1] = dt(p / two)
+                        dns[2] = dt(p)
+                        dns[3] = dt(dt(one + p) / two)
+                        dns[4] = one
+                continue
+            if x < q[0]:
+                q[0] = x
+                k = 0
+            elif x < q[1]:
+                k = 0
+            elif x < q[2]:
+                k = 1
+            elif x < q[3]:
+                k = 2
+            elif x < q[4]:
+                k = 3
+            else:
+                q[4] = x
+                k = 3
+            for i in range(k + 1, 5):
+                n[i] += 1
+            if recompute_ns:
+                cnt = dt(float(count))
+                two = dt(2.0)
+                ns[1] = dt(dt(cnt * p) / two)
+                ns[2] = dt(cnt * p)
+                ns[3] = dt(dt(cnt * dt(dt(1.0) + p)) / two)
+                ns[4] = cnt
+            else:
+                for i in range(5):
+                    ns[i] = dt(ns[i] + dns[i])
+            for i in range(1, 4):
+                d = dt(ns[i] - dt(float(n[i])))
+                if (d >= dt(1.0) and (n[i + 1] - n[i]) > 1) or (
+                    d <= dt(-1.0) and (n[i - 1] - n[i]) < -1
+                ):
+                    d_int = 1 if d > dt(0.0) else -1
+                    qs = parabolic(i, d_int)
+                    qs_dt = dt(qs)
+                    if q[i - 1] < qs_dt < q[i + 1]:
+                        q[i] = qs_dt
+                    else:
+                        q[i] = dt(linear(i, d_int))
+                    n[i] += d_int
+            count += 1
+
+        if count <= 5:
+            ordered = sorted(q[:count])
+            idx = round((count - 1) * float(p))
+            return float(ordered[idx])
+        return float(q[2])
+
+
+def naive_p2_quantile(values, prob: float, dtype: str) -> float:
+    """P^2 streaming quantile estimator using the original paper's
+    running-increment (`ns[i] += dns[i]`) marker-position bookkeeping --
+    see perfolizer issue #8 for the real-world bug report this
+    reproduces."""
+    return _p2_quantile(values, prob, dtype, recompute_ns=False)
+
+
+def stable_p2_quantile(values, prob: float, dtype: str) -> float:
+    """P^2 streaming quantile estimator recomputing each marker's desired
+    position fresh from `count` every observation (`ns[i] = count * p_i`)
+    instead of accumulating -- the author-published fix, which is both
+    more accurate (no accumulated rounding drift) and cheaper (no `dns`
+    array to maintain)."""
+    return _p2_quantile(values, prob, dtype, recompute_ns=True)
+
+
 # --- geometric mean ------------------------------------------------------
 
 def naive_geometric_mean(values, dtype: str) -> float:
@@ -870,4 +1005,5 @@ KERNELS = {
     "pearson_correlation": (naive_pearson_correlation, stable_pearson_correlation),
     "weighted_sampling_key": (naive_weighted_sampling_key, stable_weighted_sampling_key),
     "geometric_mean": (naive_geometric_mean, stable_geometric_mean),
+    "p2_quantile": (naive_p2_quantile, stable_p2_quantile),
 }

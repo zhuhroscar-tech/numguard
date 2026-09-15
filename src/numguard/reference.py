@@ -394,6 +394,109 @@ def gold_weighted_sampling_key(u: float, weight: float) -> Decimal:
     return ctx.divide(ctx.ln(u_d), w_d)
 
 
+def gold_p2_quantile(values: Sequence[float], prob: float) -> Decimal:
+    """P^2 (Piecewise-Parabolic) streaming quantile estimator (Jain &
+    Chlamtac, CACM 1985), computed entirely in 50-digit Decimal
+    arithmetic using the "recompute each marker's desired position from
+    `count` every step" form. In exact (infinite-precision) arithmetic
+    this is mathematically identical to the "accumulate a per-step
+    increment" form naive_p2_quantile uses -- after k steps,
+    k * dns[i] == count * p_i exactly -- so this single reference is
+    independent ground truth for both naive_p2_quantile (accumulated
+    `ns[i] += dns[i]`, which drifts under float rounding -- see
+    AndreyAkinshin/perfolizer#8) and stable_p2_quantile (recomputed
+    fresh each step, the author's own published fix). A bug shared by
+    both float kernels (e.g. a wrong marker-selection or interpolation
+    rule) would not be masked by comparing them only to each other,
+    since this reference is built from the paper's formulas directly in
+    Decimal, not from either kernel's float code path."""
+    ctx = _ctx()
+    p = ctx.create_decimal(repr(float(prob)))
+    two = ctx.create_decimal(2)
+    four = ctx.create_decimal(4)
+    one = ctx.create_decimal(1)
+    xs = [ctx.create_decimal(repr(float(v))) for v in values]
+
+    q: list = [ctx.create_decimal(0)] * 5
+    n = [0, 0, 0, 0, 0]
+    ns: list = [ctx.create_decimal(0)] * 5
+    count = 0
+
+    def parabolic(i: int, d: int) -> Decimal:
+        d_dec = ctx.create_decimal(d)
+        denom = ctx.create_decimal(n[i + 1] - n[i - 1])
+        term_a = ctx.divide(
+            ctx.multiply(ctx.create_decimal(n[i] - n[i - 1] + d), ctx.subtract(q[i + 1], q[i])),
+            ctx.create_decimal(n[i + 1] - n[i]),
+        )
+        term_b = ctx.divide(
+            ctx.multiply(ctx.create_decimal(n[i + 1] - n[i] - d), ctx.subtract(q[i], q[i - 1])),
+            ctx.create_decimal(n[i] - n[i - 1]),
+        )
+        return ctx.add(q[i], ctx.multiply(ctx.divide(d_dec, denom), ctx.add(term_a, term_b)))
+
+    def linear(i: int, d: int) -> Decimal:
+        return ctx.add(
+            q[i],
+            ctx.multiply(
+                ctx.create_decimal(d),
+                ctx.divide(ctx.subtract(q[i + d], q[i]), ctx.create_decimal(n[i + d] - n[i])),
+            ),
+        )
+
+    for x in xs:
+        if count < 5:
+            q[count] = x
+            count += 1
+            if count == 5:
+                q = sorted(q)
+                n = [0, 1, 2, 3, 4]
+                ns[0] = ctx.create_decimal(0)
+                ns[1] = ctx.multiply(two, p)
+                ns[2] = ctx.multiply(four, p)
+                ns[3] = ctx.add(two, ctx.multiply(two, p))
+                ns[4] = ctx.create_decimal(4)
+            continue
+        if x < q[0]:
+            q[0] = x
+            k = 0
+        elif x < q[1]:
+            k = 0
+        elif x < q[2]:
+            k = 1
+        elif x < q[3]:
+            k = 2
+        elif x < q[4]:
+            k = 3
+        else:
+            q[4] = x
+            k = 3
+        for i in range(k + 1, 5):
+            n[i] += 1
+        cnt = ctx.create_decimal(count)
+        ns[1] = ctx.divide(ctx.multiply(cnt, p), two)
+        ns[2] = ctx.multiply(cnt, p)
+        ns[3] = ctx.divide(ctx.multiply(cnt, ctx.add(one, p)), two)
+        ns[4] = cnt
+        for i in range(1, 4):
+            d = ctx.subtract(ns[i], ctx.create_decimal(n[i]))
+            if (d >= one and (n[i + 1] - n[i]) > 1) or (d <= -one and (n[i - 1] - n[i]) < -1):
+                d_int = 1 if d > 0 else -1
+                qs = parabolic(i, d_int)
+                if q[i - 1] < qs < q[i + 1]:
+                    q[i] = qs
+                else:
+                    q[i] = linear(i, d_int)
+                n[i] += d_int
+        count += 1
+
+    if count <= 5:
+        ordered = sorted(q[:count])
+        idx = int(round((count - 1) * float(p)))
+        return ordered[idx]
+    return q[2]
+
+
 def gold_geometric_mean(values: Sequence[float]) -> Decimal:
     """(prod(x))**(1/n) computed algebraically as exp(mean(ln(x))) in
     50-digit Decimal arithmetic -- mathematically identical to both

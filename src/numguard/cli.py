@@ -30,8 +30,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "rms_norm, kl_divergence, online_softmax, masked_softmax, "
             "sum, rope_cos, int8_add, hll_register, focal_loss_grad, "
             "pearson_correlation, weighted_sampling_key, "
-            "geometric_mean) against an independent high-precision "
-            "reference, across "
+            "geometric_mean, p2_quantile) against an independent "
+            "high-precision reference, across "
             "float16/float32/float64, on adversarial fixtures."
         ),
     )

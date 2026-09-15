@@ -6,6 +6,7 @@ a randomly generated array. Deterministic and reviewable by hand.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
@@ -66,6 +67,12 @@ class Fixture:
     # kernel.
     fl_gamma: Optional[float] = None
     fl_alpha: Optional[float] = None
+    # Target quantile probability (0..1), used only by p2_quantile
+    # fixtures -- `values` holds the full input stream fed to the P^2
+    # estimator one observation at a time; this is the `p` the estimator
+    # tracks (e.g. 0.5 for the streaming median). None for every other
+    # kernel.
+    p2_prob: Optional[float] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -1052,6 +1059,99 @@ GEOMETRIC_MEAN_FIXTURES = [
 ]
 
 
+P2_QUANTILE_FIXTURES = [
+    Fixture(
+        "everyday_small_stream",
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        "A tiny 7-value stream at the median (p=0.5): fewer than 5 "
+        "marker-adjustment steps ever run, so there is no opportunity "
+        "for the naive accumulate-a-per-step-increment bookkeeping to "
+        "drift -- naive and stable agree exactly. Control case showing "
+        "the bug needs many observations to accumulate, not that the "
+        "estimator is wrong in general.",
+        p2_prob=0.5,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "uniform_stream_p10_drift",
+        [
+            46.3007, 37.3312, 13.8539, 86.6562, 0.6435, 50.2782, 89.8298,
+            8.0815, 55.427, 61.665, 4.0896, 37.902, 70.348, 45.2021,
+            72.5065, 15.7157, 23.8012, 11.0948, 50.6269, 92.383, 59.0428,
+            77.4209, 38.3665, 74.6095, 10.1669, 29.1178, 67.4236, 72.5706,
+            42.1755, 8.7712, 26.6734, 20.989, 28.1184, 80.9511, 19.9483,
+            88.64, 87.9373, 5.4789, 37.8816, 49.1712, 2.3483, 42.4725,
+            90.6411, 11.2046, 59.6846, 12.1232, 57.87, 89.5303, 20.3053,
+            0.8253, 8.3504, 53.9769, 1.7465, 8.4837, 49.6742, 92.0926,
+            42.0107, 39.8135, 63.8718, 9.3418, 57.98, 17.2555, 60.8888,
+            95.8326, 5.4173, 55.5061, 60.6381, 14.9304, 26.8311, 99.4884,
+            99.7964, 12.1336, 70.5468, 95.0923, 23.6786, 61.1127, 4.3031,
+            36.5947, 67.4125, 59.0259, 77.4625, 8.6739, 34.7198, 86.4036,
+            58.414, 45.13, 40.217, 98.6072, 57.4436, 1.8367, 79.937,
+            32.8712, 43.3572, 21.3427, 44.4014, 32.471, 8.8817, 62.951,
+            10.3069, 78.4099, 2.5391, 78.0721, 80.755, 49.7331, 70.9448,
+            24.8261, 73.7617, 42.5007, 23.0953, 96.4075, 40.0904, 37.2969,
+            85.9901, 36.936, 66.7505, 17.106, 84.3274, 25.8912, 5.0504,
+            97.5259, 17.2756, 94.6519, 98.6166, 60.6558, 1.1875, 6.0911,
+            20.8602, 38.8879, 61.1549, 96.6433, 35.4531, 14.0645, 56.1932,
+            13.73, 8.6588, 55.596, 69.5988, 6.5597, 45.14, 70.3844,
+            76.417, 38.3001, 88.7177, 16.908, 71.5466, 77.1705, 88.0256,
+            49.4436, 9.9226, 4.846, 52.8838, 17.3329, 62.9684, 8.4272,
+            78.0149, 22.2408, 1.3014, 17.5851, 45.6698, 55.9245, 38.8284,
+            17.305, 48.2062, 94.6437, 53.543, 94.1287, 2.8773, 99.3154,
+            88.8994, 54.4354, 52.3495, 53.7124, 90.9534, 6.5579, 64.281,
+            54.2151, 30.0318, 72.4927, 72.0676, 10.321, 69.9521, 45.3532,
+            49.0216, 63.6762, 5.2948, 60.2918, 37.3143, 87.8734, 23.1105,
+            82.3122, 72.959, 62.4986, 87.5849, 3.5999, 59.6959, 61.3274,
+            67.8056, 40.6676, 6.8965, 18.909, 60.8116, 18.1313, 6.4877,
+            35.4794, 47.0242, 53.5569, 2.5972, 77.5574, 33.3829, 78.2821,
+            0.857, 95.4039, 59.0245, 97.6365, 98.6315, 83.2784, 10.6235,
+            34.8763, 23.1316, 77.9985, 19.2163, 22.1154, 11.0606, 12.0091,
+            93.8131, 97.6193, 37.2428, 74.1056, 46.7509, 52.2014, 36.9488,
+            63.4714, 23.6153, 25.6365, 51.7827, 19.7358, 43.9256, 94.3902,
+            2.2234, 10.3254, 79.997, 5.7803, 25.1236, 85.164, 60.5253,
+            22.0701, 5.8609, 27.5184, 30.0149, 80.0279, 97.5554, 78.6289,
+            90.175, 93.0681, 87.6575, 91.9975, 96.7538, 9.4415, 31.7678,
+            24.7183, 60.417, 49.1705, 34.6942, 83.7104, 39.9092, 20.8932,
+            27.6388, 46.175, 61.0469, 56.8438, 43.9933, 18.6335, 40.2166,
+            32.5024, 17.0568, 54.3882, 18.8562, 71.1602, 65.8763, 13.7693,
+            62.5371, 33.7847, 44.7076, 60.6556, 76.1604, 88.3575, 73.355,
+            21.1233, 54.1939, 33.537, 1.9122, 55.2461, 47.0597, 86.6907,
+            32.3688, 83.357, 51.4144, 9.9094, 71.6918, 28.4658,
+        ],
+        "300 independently-drawn uniform(0,100) observations tracking "
+        "the p=0.1 quantile -- a realistic streaming-telemetry shape "
+        "(e.g. tracking p10 latency without storing every sample). "
+        "Reproduces AndreyAkinshin/perfolizer#8 across all three "
+        "dtypes: naive_p2_quantile's `ns[i] += dns[i]` bookkeeping "
+        "drifts by ~4-7% relative error versus the 50-digit Decimal "
+        "reference, while stable_p2_quantile's recompute-from-count "
+        "form matches the reference to within ordinary float rounding "
+        "at every precision.",
+        p2_prob=0.1,
+        expect_naive_ok=False,
+    ),
+    Fixture(
+        "sine_stream_p35_drift",
+        [round(50 + 40 * math.sin(i * 0.7), 6) for i in range(200)],
+        "A deterministic, hand-reviewable sine-wave stream (no RNG) "
+        "tracking the p=0.35 quantile -- picked because this "
+        "probability's marker lands close enough to an integer "
+        "boundary that the naive accumulated `dns[i]` bookkeeping's "
+        "rounding drift (versus the recompute-fresh-each-step fix) "
+        "changes which marker-adjustment branch fires partway through "
+        "the stream, producing a ~2.9% relative error at float64 that "
+        "compounds for the rest of the stream -- exactly the class of "
+        "bug perfolizer's own issue #8 describes (a deferred marker "
+        "adjustment corrupting subsequent state, not a one-off "
+        "rounding blip).",
+        p2_prob=0.35,
+        dtypes=("float64",),
+        expect_naive_ok=False,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -1070,6 +1170,7 @@ FIXTURES_BY_KERNEL = {
     "pearson_correlation": PEARSON_CORRELATION_FIXTURES,
     "weighted_sampling_key": WEIGHTED_SAMPLING_KEY_FIXTURES,
     "geometric_mean": GEOMETRIC_MEAN_FIXTURES,
+    "p2_quantile": P2_QUANTILE_FIXTURES,
 }
 
 
