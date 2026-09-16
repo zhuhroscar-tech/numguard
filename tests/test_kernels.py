@@ -279,6 +279,35 @@ class TestLayerNormNegativeVarianceNaN:
         # mean-centered, unit-ish variance: middle element should sit at 0
         assert float(stable[2]) == pytest.approx(0.0, abs=1e-9)
 
+    def test_naive_nans_on_identical_values_float16_squaring_overflow(self):
+        # Distinct failure boundary from the negative-variance case
+        # above: values are IDENTICAL (true variance exactly 0, not a
+        # cancellation case), but at float16 x**2 alone overflows
+        # (300**2 = 90000 > float16 max ~65504) before the whole
+        # vector's magnitude approaches float16's range limit. This
+        # gives mean_sq = inf, sq_mean = inf, var = inf - inf = NaN --
+        # every output element NaNs even though the true LayerNorm
+        # output is exactly 0.0 everywhere. Verified boundary: 250.0
+        # stays finite (250**2=62500 < 65504), 256.0 already NaNs.
+        values = [300.0] * 8
+        naive = kernels.naive_layer_norm(values, "float16")
+        stable = kernels.stable_layer_norm(values, "float16")
+        assert all(math.isnan(v) for v in naive)
+        assert all(float(v) == pytest.approx(0.0, abs=1e-6) for v in stable)
+
+    def test_naive_stays_finite_just_below_the_squaring_overflow_boundary(self):
+        # Companion control case: same identical-values shape, same
+        # dtype, magnitude picked so x**2 does NOT overflow float16
+        # (250**2 = 62500 < 65504) -- both naive and stable should
+        # agree and produce (approximately) zero, confirming the NaN
+        # above is specifically the squaring-overflow boundary and not
+        # some other float16 artifact of this fixture shape.
+        values = [250.0] * 8
+        naive = kernels.naive_layer_norm(values, "float16")
+        stable = kernels.stable_layer_norm(values, "float16")
+        assert all(math.isfinite(v) for v in naive)
+        assert all(math.isfinite(v) for v in stable)
+
 
 class TestRMSNormReductionOverflow:
     """RMSNorm built with the reduction (mean of squares) kept in a

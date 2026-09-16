@@ -103,6 +103,18 @@ production failure mode, not a contrived edge case.
 mean-centered variance, which can never go negative (it's a mean of
 squares), so `sqrt(var + eps)` is always well-defined.
 
+**A second, distinct naive failure boundary** (`zero_variance_float16_
+squaring_overflow` fixture): even when the input values are all
+IDENTICAL -- true variance exactly 0, no cancellation involved at all --
+naive's `mean(x**2)` term can still overflow float16 range on its own
+(e.g. `300**2 = 90000` already exceeds float16's `~65504` max), giving
+`mean_sq = inf`, `sq_mean = inf`, and `var = inf - inf = NaN`. This is a
+pure dtype-range overflow, not a cancellation bug, and needs a much
+smaller magnitude to trigger (float16 elements as small as `256`) than
+the cancellation case above -- confirmed to be a previously-uncovered
+gap: no prior fixture demonstrated the identical-value NaN collapse at
+a magnitude where the elements themselves are still representable.
+
 ## RMSNorm
 
 **Textbook definition:** `RMSNorm(x) = x / sqrt(mean(x^2) + eps)` -- note

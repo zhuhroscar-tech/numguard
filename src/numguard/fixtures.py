@@ -315,6 +315,29 @@ LAYER_NORM_FIXTURES = [
         dtypes=("float32", "float64"),
         expect_naive_ok=True,
     ),
+    Fixture(
+        "zero_variance_float16_squaring_overflow",
+        [300.0] * 8,
+        "True variance is exactly 0 with identical values (the same "
+        "shape as zero_variance_large_offset above), but at float16 "
+        "this is NOT a benign control case: 300.0 itself is well "
+        "within float16's ~65504 range, yet 300.0**2 = 90000 already "
+        "overflows float16's range on its own, well before the whole "
+        "vector's magnitude approaches float16's max. The naive "
+        "one-pass formula computes mean_sq = mean(x**2) = inf and "
+        "sq_mean = mean(x)**2 = inf, so var = inf - inf = NaN and "
+        "every LayerNorm output element is NaN -- even though the "
+        "true, mathematically correct output is exactly 0.0 "
+        "everywhere (verified: naive first NaNs at magnitude 256, "
+        "the float16 sqrt(65504) boundary; 250 stays finite). This is "
+        "a genuinely distinct failure boundary from "
+        "zero_variance_large_offset (whose reasoning for excluding "
+        "float16 -- 5,000,000 overflowing float16's range outright -- "
+        "does not apply here) and was previously uncovered: no "
+        "existing fixture demonstrated the identical-value NaN "
+        "collapse at a magnitude where x itself is still finite.",
+        dtypes=("float16",),
+    ),
 ]
 
 RMS_NORM_FIXTURES = [
