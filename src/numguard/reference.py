@@ -742,3 +742,20 @@ def gold_int32_dequant_overflow(q_code, zero_point, scale) -> Decimal:
     return ctx.multiply(ctx.subtract(q, z), s)
 
 
+def gold_norm(values: Sequence[float]) -> Decimal:
+    """sqrt(sum(x_i^2)) computed exactly in 50-digit Decimal arithmetic --
+    the textbook Euclidean-norm definition, with no fixed-width
+    intermediate anywhere. This is the independent ground truth for both
+    naive_norm's dot-product-first formula (numpy/numpy#32372's
+    documented overflow/underflow failure mode) and stable_norm's
+    max-scaled reduction (the numpy/numpy#31927 fix approach); Decimal's
+    unbounded exponent range means this reference itself never overflows
+    or underflows for any input this kernel pair is exercised against."""
+    ctx = _ctx()
+    xs = _to_decimals(values)
+    total = ctx.create_decimal(0)
+    for x in xs:
+        total = ctx.add(total, ctx.multiply(x, x))
+    return ctx.sqrt(total)
+
+

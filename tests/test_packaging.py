@@ -116,6 +116,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "bpe_pair_count_overflow": "BPE trainer pair-count accumulator overflow",
         "beam_search_length_penalty": "Beam-search length-penalty prompt-length leak",
         "int32_dequant_overflow": "int32 dequantization subtraction overflow",
+        "norm": "Vector 2-norm",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

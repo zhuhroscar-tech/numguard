@@ -1242,6 +1242,76 @@ only once it is crossed -- and every stable counterpart still actually
 passes, proving these are live regression tests targeting the specific
 overflow boundary, not decorative claims.
 
+## Vector 2-norm
+
+**Textbook/reference definition:** the Euclidean 2-norm of a vector `x`
+is `sqrt(sum(x_i^2))` -- an exact algebraic sum-of-squares followed by a
+single square root, with no inherent bound on the intermediate
+magnitude other than whatever numeric type performs the sum.
+
+**Naive formula** (`naive_norm`): compute `sqrt(dot(x, x))`, exactly
+NumPy's own vector-norm code path for `ord=None`/`ord=2`
+(`numpy/linalg/_linalg.py`, `norm()`). Every element is squared BEFORE
+the sum, so the intermediate `dot(x, x)` can overflow to `+inf` (or
+every squared term can underflow to exactly `0.0`) at roughly the
+SQUARE of the vector's true safe magnitude -- far below where the
+actual norm (the square root of that sum, hence the same order of
+magnitude as the inputs themselves) would ever need to overflow. This
+This is a real, currently-open bug: numpy/numpy#32372 ("`numpy.linalg.norm`
+overflows for intermediate values due to naive sum-of-squares
+implementation"), whose own reported repro is three `float16` values of
+`200.0` each -- the true norm is `~346.4`, comfortably within
+`float16`'s `~65504` max representable value, but `dot(x,x) =
+3*200**2 = 120000` already exceeds it, so `numpy.linalg.norm` returns
+`inf` for a perfectly representable answer. Independently
+re-reproduced on this repository's installed `numpy==2.5.2` before this
+kernel was accepted (`np.linalg.norm([200,200,200], dtype=np.float16)`
+reproduces the issue's own exact `inf` result), per this repository's
+reproduce-before-accept discipline. A fix PR (numpy/numpy#31927, "fix
+np.linalg.norm overflow for representable results") was confirmed
+still open and unmerged via the GitHub API immediately before this
+kernel's acceptance card was written. The issue's own author also notes
+NumPy's `norm` is treated as the cross-library ground-truth reference
+by both JAX's and PyTorch's own test suites, so this failure mode does
+not stay contained to one library. The same intermediate-squaring
+mechanism also produces a symmetric UNDERFLOW failure (every squared
+term rounds to exactly `0.0` for a vector of sufficiently small but
+still safely-representable values), directly demonstrated in this
+repository's `test_kernels.py::TestNormOverflow` unit tests -- though
+this repo's own fixture set marks that specific case as a CLI/audit
+control rather than an adversarial finding, since the true norm there
+is itself far below the audit tool's tolerance floor for that dtype
+(see the `float32_underflow_tiny_uniform` fixture's own docstring in
+`fixtures.py` for the full reasoning).
+
+**Stable formula** (`stable_norm`): the LAPACK `dnrm2`-style fix
+proposed in numpy/numpy#31927 -- divide by the largest-magnitude
+element BEFORE squaring and summing (accumulating in `float64` for
+extra headroom, matching LAPACK's own higher-precision reduction), then
+multiply the result back by that same max magnitude at the very end.
+Every scaled term is now bounded by `1.0` regardless of the vector's
+raw scale, so nothing overflows or underflows before the sum -- the
+same "move the scale-sensitive step out of the danger zone, restore
+the scale afterward" principle already used by this repository's
+`stable_geometric_mean` (log-space) and `stable_pearson_correlation`
+(normalize-then-dot) kernels.
+
+`norm`'s reference (`gold_norm`) computes `sqrt(sum(x_i^2))` directly
+in 50-digit arbitrary-precision `Decimal` arithmetic, with no
+fixed-width intermediate anywhere -- independent of whether either
+kernel under test squares-then-sums directly or scales first.
+`numguard --check-naive-fails` (run in CI on every push) asserts that
+every naive fixture documented above marked adversarial (float16
+overflow, float32 overflow, float64 overflow) still actually fails at
+the CLI/audit tolerance level, that both control cases (the everyday
+3-4-5 case, and the float32 underflow case -- adversarial at the direct
+kernel level per `test_kernels.py`, but a control at the CLI/audit
+level since the true norm there sits far below this tool's float32
+tolerance floor) still agree between naive and stable within tolerance,
+and that every stable counterpart still actually passes -- proving
+these are live regression tests targeting the specific overflow/
+underflow boundaries, not decorative claims.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

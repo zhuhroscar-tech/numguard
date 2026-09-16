@@ -321,9 +321,25 @@ a blog post or a framework-internal function you have to trust blindly.
   dequantization step itself, independent of any requantization
   bookkeeping (see `int8_add` above) or float-precision concern.
 
+- **Vector 2-norm** (`norm`): a real, currently-open bug --
+  numpy/numpy#32372 ("`numpy.linalg.norm` overflows for intermediate
+  values due to naive sum-of-squares implementation") -- where
+  `numpy.linalg.norm` computes `sqrt(dot(x, x))` directly, squaring
+  every element before summing. Three `float16` values of `200.0` each
+  have a true norm of `~346.4` (well within float16's `~65504` max),
+  but `dot(x,x) = 3*200**2 = 120000` already overflows, so
+  `numpy.linalg.norm` returns `inf` for a perfectly representable
+  answer -- reproduced from scratch against this repo's installed
+  `numpy==2.5.2` before acceptance. A fix PR (numpy/numpy#31927) was
+  confirmed still open via the GitHub API immediately before
+  acceptance. The stable fix scales by the max magnitude before
+  squaring (the same LAPACK `dnrm2` approach the fix PR proposes),
+  mirroring this repo's `geometric_mean`/`pearson_correlation` kernels'
+  "move the scale-sensitive step out of the danger zone" pattern.
+
 ## What this does
 
-For each of twenty-seven kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty-eight kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
@@ -331,7 +347,7 @@ For each of twenty-seven kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `speculative_reject`, `weight_decay`, `gradient_accumulation_bias`,
 `longrope_factor_select`, `squared_euclidean_distance`,
 `bpe_pair_count_overflow`, `beam_search_length_penalty`,
-`int32_dequant_overflow`),
+`int32_dequant_overflow`, `norm`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add`,
 `hll_register`, `bpe_pair_count_overflow`, and `int32_dequant_overflow`
 are scored at `float64`

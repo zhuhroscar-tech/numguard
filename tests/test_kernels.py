@@ -1650,3 +1650,72 @@ class TestInt32DequantOverflow:
         # 39 ** 1.1, computed independently in plain float64 as a
         # sanity cross-check of the Decimal reference itself.
         assert float(gold) == pytest.approx(-20.0 / (39.0 ** 1.1), rel=1e-9)
+
+
+class TestNormOverflow:
+    """naive_norm computes sqrt(dot(x, x)) -- squaring every element
+    BEFORE summing means the intermediate sum-of-squares overflows (or
+    every squared term underflows to exactly 0.0) at roughly the SQUARE
+    of the vector's true safe magnitude, long before the actual (much
+    smaller, same-order-as-the-inputs) norm is reached. stable_norm
+    fixes this the LAPACK dnrm2 way: divide by the max magnitude before
+    squaring, sum, then multiply back. Mirrors numpy/numpy#32372 (open),
+    independently re-reproduced on this host's installed numpy (2.5.2)
+    before this kernel was accepted -- see kernels.py's naive_norm
+    docstring for the full citation."""
+
+    def test_naive_overflows_stable_survives_float16(self):
+        # numpy/numpy#32372's own reported case: three copies of 200.0,
+        # true norm ~346.4 (well within float16's ~65504 max), but
+        # dot(x,x) = 3*200**2 = 120000 already exceeds it.
+        naive = kernels.naive_norm([200.0, 200.0, 200.0], "float16")
+        stable = kernels.stable_norm([200.0, 200.0, 200.0], "float16")
+        assert math.isinf(naive) and naive > 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(346.41016151377545, rel=1e-2)
+
+    def test_naive_overflows_stable_survives_float32(self):
+        naive = kernels.naive_norm([1e20, 1e20, 1e20], "float32")
+        stable = kernels.stable_norm([1e20, 1e20, 1e20], "float32")
+        assert math.isinf(naive) and naive > 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(1.7320508075688775e20, rel=1e-3)
+
+    def test_naive_underflows_stable_survives_float32(self):
+        naive = kernels.naive_norm([1e-25, 1e-25, 1e-25], "float32")
+        stable = kernels.stable_norm([1e-25, 1e-25, 1e-25], "float32")
+        assert naive == 0.0
+        assert math.isfinite(stable) and stable > 0
+        assert stable == pytest.approx(1.7320508075688775e-25, rel=1e-3)
+
+    def test_naive_overflows_stable_survives_float64(self):
+        # Even float64's much wider range is not immune: three copies
+        # of 1e200 still overflow dot(x,x) = 3e400.
+        naive = kernels.naive_norm([1e200, 1e200, 1e200], "float64")
+        stable = kernels.stable_norm([1e200, 1e200, 1e200], "float64")
+        assert math.isinf(naive) and naive > 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(1.7320508075688773e200, rel=1e-9)
+
+    def test_both_agree_on_everyday_values(self):
+        # Control: classic 3-4-5 right triangle, true norm exactly 5.0,
+        # nowhere near overflow/underflow -- naive and stable must agree.
+        naive = kernels.naive_norm([3.0, 4.0], "float64")
+        stable = kernels.stable_norm([3.0, 4.0], "float64")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(5.0, rel=1e-9)
+        assert naive == pytest.approx(stable, rel=1e-9)
+
+    def test_zero_vector_returns_zero_not_nan(self):
+        # Edge case: an all-zero vector's max magnitude is 0, so
+        # stable_norm's divide-by-max must special-case this rather
+        # than dividing by zero and producing NaN.
+        naive = kernels.naive_norm([0.0, 0.0, 0.0], "float64")
+        stable = kernels.stable_norm([0.0, 0.0, 0.0], "float64")
+        assert naive == 0.0
+        assert stable == 0.0
+
+    def test_reference_matches_direct_math_definition(self):
+        gold = reference.gold_norm([3.0, 4.0])
+        assert float(gold) == pytest.approx((3.0**2 + 4.0**2) ** 0.5, rel=1e-9)
+        assert float(gold) == pytest.approx(5.0, rel=1e-9)

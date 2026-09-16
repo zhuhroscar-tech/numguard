@@ -1542,6 +1542,61 @@ def stable_int32_dequant_overflow(q_code, zero_point, scale) -> float:
     return float(diff64) * float(scale)
 
 
+# --- vector 2-norm (numpy/numpy#32372, filed 2026, open) -----------------
+#
+# Real, currently-open bug, independently re-reproduced on this host's
+# installed numpy (2.5.2) before writing this kernel's acceptance card,
+# per this repo's own reproduce-before-accept discipline: `np.linalg.norm`
+# for a 1-D vector computes sqrt(x.dot(x)) directly (see numpy's
+# numpy/linalg/_linalg.py, `norm()`'s ord=None/ord=2 vector branch). The
+# dot product squares every element BEFORE summing, so it overflows to
+# +inf (or underflows every term to exactly 0.0) at roughly the SQUARE of
+# the input's true safe magnitude -- e.g. three float16 values of 200
+# each have a norm of ~346 (well within float16's ~65504 max), yet
+# `x.dot(x)` = 3*200**2 = 120000 already exceeds float16's max, so the
+# naive formula returns inf for a perfectly representable answer. Issue
+# #32372 documents this exact float16 [200,200,200] case; a fix PR
+# (numpy/numpy#31927, "fix np.linalg.norm overflow for representable
+# results") was open, unmerged, as of this writing -- verified live via
+# `gh pr view 31927 --repo numpy/numpy` immediately before this kernel
+# was written, not assumed from the issue text alone. The issue itself
+# also notes NumPy's norm is treated as the cross-library ground-truth
+# reference by both JAX's and PyTorch's own test suites, so a norm bug
+# here does not stay contained to one library.
+def naive_norm(values, dtype: str) -> float:
+    """sqrt(dot(x, x)) -- the literal textbook Euclidean-norm formula,
+    matching numpy's own vector-norm code path for ord=None/ord=2. Every
+    element is squared before the sum, so the intermediate sum-of-squares
+    can overflow (or every term can underflow to 0.0) at roughly the
+    SQUARE of the vector's true safe magnitude, long before the actual
+    (much smaller, same-order-as-the-inputs) norm is reached."""
+    x = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        return float(np.sqrt(np.dot(x, x)))
+
+
+def stable_norm(values, dtype: str) -> float:
+    """LAPACK dnrm2-style max-scaling: divide by the largest-magnitude
+    element BEFORE squaring and summing (in float64, matching LAPACK's
+    own higher-precision accumulation for this reduction), then multiply
+    the result back by that same max magnitude at the very end. Every
+    squared term is now bounded by 1.0 regardless of the vector's raw
+    scale, so nothing overflows or underflows before the sum -- the same
+    fix approach proposed in numpy/numpy#31927 and already used by this
+    repo's stable_geometric_mean (log-space) and stable_pearson_
+    correlation (normalize-then-dot) kernels for the same class of
+    problem: move the scale-sensitive operation out of the danger zone
+    before reducing, then restore the scale afterward."""
+    x = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        t = np.max(np.abs(x))
+        if t == 0:
+            return 0.0
+        scaled = (x.astype(np.float64) / float(t))
+        s = np.sum(scaled * scaled)
+        return float(np.sqrt(s) * float(t))
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1570,4 +1625,5 @@ KERNELS = {
     "bpe_pair_count_overflow": (naive_bpe_pair_count_overflow, stable_bpe_pair_count_overflow),
     "beam_search_length_penalty": (naive_beam_search_length_penalty, stable_beam_search_length_penalty),
     "int32_dequant_overflow": (naive_int32_dequant_overflow, stable_int32_dequant_overflow),
+    "norm": (naive_norm, stable_norm),
 }

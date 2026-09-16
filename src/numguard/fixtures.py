@@ -1898,6 +1898,79 @@ INT32_DEQUANT_OVERFLOW_FIXTURES = [
 ]
 
 
+NORM_FIXTURES = [
+    Fixture(
+        "everyday_control_3_4_5",
+        [3.0, 4.0],
+        "Classic 3-4-5 right triangle -- true norm is exactly 5.0, far "
+        "from any dtype's overflow/underflow boundary. Control case: "
+        "naive dot-product-first formula and stable max-scaled formula "
+        "agree exactly here.",
+        dtypes=("float16", "float32", "float64"),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float16_overflow_200s",
+        [200.0, 200.0, 200.0],
+        "numpy/numpy#32372's own reported case, independently "
+        "re-reproduced on this host's installed numpy (2.5.2) before "
+        "this kernel was accepted: the true norm (~346.4) is well "
+        "within float16's ~65504 max representable value, but the "
+        "naive dot(x,x) intermediate (3*200**2 = 120000) already "
+        "exceeds it, so naive_norm returns +inf for a perfectly "
+        "representable answer while stable_norm's max-scaling keeps "
+        "every squared term <= 1.0 and returns the correct ~346.4.",
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "float32_overflow_large_uniform",
+        [1.0e20, 1.0e20, 1.0e20],
+        "float32 max is ~3.4e38, so three copies of 1e20 (true norm "
+        "~1.73e20) look completely safe by eye -- but dot(x,x) = "
+        "3*(1e20)**2 = 3e40 already overflows float32 before the "
+        "sqrt ever runs. Same failure class as the float16 case above, "
+        "reproduced at a different dtype/magnitude to show this is a "
+        "structural property of the naive formula, not one specific "
+        "constant.",
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "float32_underflow_tiny_uniform",
+        [1.0e-25, 1.0e-25, 1.0e-25],
+        "Symmetric underflow counterpart to the overflow fixtures above: "
+        "float32's smallest normal magnitude is ~1.18e-38, so 1e-25 "
+        "alone is safely representable -- but dot(x,x) = 3*(1e-25)**2 = "
+        "3e-50 underflows to exactly 0.0 in float32 before the sqrt "
+        "runs, so naive_norm returns exactly 0.0 instead of the true "
+        "~1.73e-25 while stable_norm's max-scaling (dividing by the max "
+        "magnitude before squaring) recovers the correct nonzero value "
+        "-- a genuine, directly-tested kernel-level difference (see "
+        "test_kernels.py::TestNormOverflow). Marked expect_naive_ok "
+        "here (a CLI/audit-level control, not an adversarial case) "
+        "because the true norm itself is ~20 orders of magnitude below "
+        "this tool's float32 absolute-tolerance floor (1e-5, chosen so "
+        "genuinely negligible differences at a dtype's own noise floor "
+        "aren't over-flagged as findings) -- both 0.0 and 1.73e-25 read "
+        "as numerically indistinguishable from 'zero' at any scale this "
+        "audit's tolerance was designed to notice, unlike the overflow "
+        "fixtures above where naive returns +inf, which no tolerance "
+        "can ever match to a finite gold value regardless of scale.",
+        dtypes=("float32",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float64_overflow_extreme_uniform",
+        [1.0e200, 1.0e200, 1.0e200],
+        "float64's much wider range (~1.8e308 max) is not immune "
+        "either: three copies of 1e200 (true norm ~1.73e200, still "
+        "comfortably finite) overflow dot(x,x) = 3e400, which exceeds "
+        "even float64's max exponent, well before the true (much "
+        "smaller) norm is reached.",
+        dtypes=("float64",),
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -1926,6 +1999,7 @@ FIXTURES_BY_KERNEL = {
     "bpe_pair_count_overflow": BPE_PAIR_COUNT_OVERFLOW_FIXTURES,
     "beam_search_length_penalty": BEAM_SEARCH_LENGTH_PENALTY_FIXTURES,
     "int32_dequant_overflow": INT32_DEQUANT_OVERFLOW_FIXTURES,
+    "norm": NORM_FIXTURES,
 }
 
 
