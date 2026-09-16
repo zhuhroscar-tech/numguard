@@ -337,9 +337,34 @@ a blog post or a framework-internal function you have to trust blindly.
   mirroring this repo's `geometric_mean`/`pearson_correlation` kernels'
   "move the scale-sensitive step out of the danger zone" pattern.
 
+- **Incremental (streaming) mean** (`incremental_mean`): a real,
+  currently-open bug in scikit-learn's `_incremental_mean_and_var` --
+  the update rule behind `StandardScaler.partial_fit` and every other
+  incremental preprocessor built on it -- tracked as
+  scikit-learn/scikit-learn#5602, open since 2015 and still open as of
+  this writing. Every call reconstructs `last_sum = last_mean *
+  last_sample_count`, then combines it with the new batch's own sum;
+  `last_sample_count` grows with every batch folded into the stream, so
+  the reconstructed `last_sum` grows without bound even when every
+  individual value and the true mean stay fixed and small -- it is the
+  RECONSTRUCTED total, not the data, that overflows to `inf`. Three fix
+  attempts (#11549, #34664, #34874) were opened over the years and all
+  three were closed without merging -- confirmed live via the GitHub
+  API (`merged=false`, `mergedAt=null` on the most recent one)
+  immediately before this kernel was accepted, and independently
+  reproduced from the issue's own repro script against this repo's
+  installed `scikit-learn==1.9.1` before acceptance (`RuntimeWarning:
+  overflow encountered in add`, final mean `== inf`). The stable fix
+  applies the Chan/Golub/LeVeque delta-based merge scikit-learn's own
+  still-unmerged #34874 proposes: never reconstruct a running sum,
+  only ever move the running mean by a bounded `delta * weight` step.
+  A different bug class from `norm`/`sum` above: the defect lives in a
+  *stateful, multi-call* update rule's own bookkeeping (rediscovering
+  a scale-unbounded quantity every call), not in a single-call formula.
+
 ## What this does
 
-For each of twenty-eight kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of twenty-nine kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
@@ -347,7 +372,7 @@ For each of twenty-eight kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `speculative_reject`, `weight_decay`, `gradient_accumulation_bias`,
 `longrope_factor_select`, `squared_euclidean_distance`,
 `bpe_pair_count_overflow`, `beam_search_length_penalty`,
-`int32_dequant_overflow`, `norm`),
+`int32_dequant_overflow`, `norm`, `incremental_mean`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add`,
 `hll_register`, `bpe_pair_count_overflow`, and `int32_dequant_overflow`
 are scored at `float64`

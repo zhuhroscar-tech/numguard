@@ -128,6 +128,13 @@ class Fixture:
     # difference exceeds int32 range. None for every other kernel.
     dq_zero_point: Optional[int] = None
     dq_scale: Optional[float] = None
+    # Number of times the same batch is folded into a running mean,
+    # used only by incremental_mean fixtures -- `values` holds the
+    # (small, fixed) batch presented on every call, matching
+    # scikit-learn's `partial_fit(same_batch)` repeated-call pattern
+    # from scikit-learn/scikit-learn#5602's own repro. None for every
+    # other kernel.
+    im_num_batches: Optional[int] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -1971,6 +1978,78 @@ NORM_FIXTURES = [
 ]
 
 
+# Fixtures for incremental_mean model scikit-learn's own
+# StandardScaler.partial_fit(same_batch) repro from
+# scikit-learn/scikit-learn#5602: the SAME small batch is folded into
+# the running mean `im_num_batches` times, so the true mean never
+# changes from the single-batch mean regardless of how many times it
+# is repeated -- any drift away from that constant value as
+# `im_num_batches` grows is entirely an artifact of the naive
+# reconstructed-sum update, not a property of the data.
+INCREMENTAL_MEAN_FIXTURES = [
+    Fixture(
+        "everyday_small_few_batches",
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        "Ordinary small batch folded in only 5 times -- both the naive "
+        "reconstructed-sum update and the stable delta-based merge "
+        "should agree closely with the true mean (3.0).",
+        im_num_batches=5,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float64_large_uniform_many_batches",
+        [1.0e307, 1.0e307, 1.0e307],
+        "Every individual value (1e307) and the true mean (1e307) are "
+        "both comfortably finite in float64 (max ~1.8e308) -- but "
+        "naive_incremental_mean's `last_sum = last_mean * last_count` "
+        "reconstruction grows with last_count on every one of 10 "
+        "folded-in batches, overflowing to +inf long before the true, "
+        "unchanged mean is exceeded. This is scikit-learn/scikit-"
+        "learn#5602's own documented failure shape (reproduced from "
+        "its repro script against the installed scikit-learn version "
+        "before this fixture was written), scaled to a magnitude that "
+        "demonstrates the same defect without requiring scikit-learn "
+        "itself as a test dependency. Restricted to float64 only: "
+        "1e307 itself already overflows on cast to float16/float32, "
+        "which would test dtype range, not this kernel's defect.",
+        im_num_batches=10,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "float32_large_uniform_many_batches",
+        [1.0e37, 1.0e37, 1.0e37],
+        "float32 counterpart at a smaller absolute scale (float32 max "
+        "~3.4e38): the true mean (1e37) stays put, but naive's "
+        "reconstructed last_sum overflows to +inf after enough folded-"
+        "in batches, showing this is a structural property of the "
+        "update rule's growing last_count term, not one specific "
+        "float64 constant.",
+        im_num_batches=15,
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "moderate_scale_many_batches_control",
+        [100.0, 200.0, 300.0],
+        "Moderate-scale values folded in 200 times -- large enough a "
+        "batch count to stress the naive update's growing last_count "
+        "term, but not large enough in magnitude for last_sum to "
+        "actually overflow at this dtype; both formulas correctly "
+        "converge to the true unchanged mean (200.0), demonstrating "
+        "this is genuinely a magnitude-triggered defect, not a "
+        "batch-count one. Restricted to float32/float64: at float16, "
+        "the reconstructed last_sum for 200 batches of ~200 already "
+        "exceeds float16's ~65504 max on its own, so naive genuinely "
+        "does overflow there -- that is a real (if less dramatic) "
+        "instance of the same defect, not a control case, and stays "
+        "out of this fixture's scope so the naive-ok claim holds at "
+        "every dtype it is checked against.",
+        im_num_batches=200,
+        dtypes=("float32", "float64"),
+        expect_naive_ok=True,
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -2000,6 +2079,7 @@ FIXTURES_BY_KERNEL = {
     "beam_search_length_penalty": BEAM_SEARCH_LENGTH_PENALTY_FIXTURES,
     "int32_dequant_overflow": INT32_DEQUANT_OVERFLOW_FIXTURES,
     "norm": NORM_FIXTURES,
+    "incremental_mean": INCREMENTAL_MEAN_FIXTURES,
 }
 
 

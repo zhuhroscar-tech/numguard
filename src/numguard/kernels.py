@@ -1597,6 +1597,77 @@ def stable_norm(values, dtype: str) -> float:
         return float(np.sqrt(s) * float(t))
 
 
+# --- incremental (streaming) mean -----------------------------------
+#
+# Models scikit-learn's `_incremental_mean_and_var`, the update rule
+# behind `StandardScaler.partial_fit` (and every other incremental
+# preprocessor built on it). See scikit-learn/scikit-learn#5602 (open
+# since 2015, still open as of this writing -- verified live via
+# `gh api repos/scikit-learn/scikit-learn/issues/5602` immediately
+# before this kernel was written, not assumed from the issue text
+# alone): the running mean is reconstructed each call as
+# `last_sum = last_mean * last_sample_count`, then combined with the
+# new batch's own sum and divided by the updated count. That
+# reconstructed `last_sum` grows without bound as more batches are
+# folded in -- for a stream of large-but-individually-representable
+# values, it eventually overflows to `inf` even though the true mean
+# never leaves the input values' own scale. Three fix attempts
+# (#11549, #34664, #34874) were opened and all closed without merging
+# -- confirmed live via GraphQL cross-referenced-PR lookup and
+# `gh api .../pulls/34874` (merged=false) immediately before this
+# kernel was written -- so the defect is live on every scikit-learn
+# release as of this writing, not stale evidence. Independently
+# reproduced from the issue's own repro script on this host's
+# installed scikit-learn 1.9.1 before acceptance (RuntimeWarning:
+# overflow encountered in add; final mean == inf).
+def naive_incremental_mean(values, num_batches: int, dtype: str) -> float:
+    """Sum-reconstruction running-mean update: `last_sum = last_mean *
+    last_count` every call, exactly scikit-learn's `_incremental_mean_
+    and_var` before any of the three closed-unmerged fix attempts.
+    `last_count` grows every batch, so `last_sum` grows without bound
+    even when every individual value and the true mean stay small
+    relative to the dtype's max -- it is the RECONSTRUCTED total, not
+    the mean or any single input, that overflows."""
+    dt = DTYPES[dtype]
+    x = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        last_mean = dt(0)
+        last_count = 0
+        for _ in range(num_batches):
+            new_sum = dt(np.sum(x))
+            new_count = len(x)
+            last_sum = dt(last_mean) * dt(last_count)
+            updated_count = last_count + new_count
+            updated_mean = (last_sum + new_sum) / dt(updated_count)
+            last_mean = updated_mean
+            last_count = updated_count
+        return float(last_mean)
+
+
+def stable_incremental_mean(values, num_batches: int, dtype: str) -> float:
+    """Chan/Golub/LeVeque delta-based mean merge -- the mitigation
+    scikit-learn's still-unmerged #34874 proposes: never reconstruct a
+    running sum at all. Each new batch contributes only its own
+    (small-magnitude, same-scale-as-the-inputs) mean and a weight
+    `new_count / updated_count` in [0, 1]; the running mean moves by a
+    bounded `delta * weight` step every time, so it can never leave the
+    input values' own order of magnitude regardless of how many batches
+    are folded in."""
+    dt = DTYPES[dtype]
+    x = _arr(values, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        last_mean = dt(0)
+        last_count = 0
+        for _ in range(num_batches):
+            new_mean = dt(np.mean(x))
+            new_count = len(x)
+            updated_count = last_count + new_count
+            delta = new_mean - last_mean
+            last_mean = last_mean + delta * dt(new_count) / dt(updated_count)
+            last_count = updated_count
+        return float(last_mean)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1626,4 +1697,5 @@ KERNELS = {
     "beam_search_length_penalty": (naive_beam_search_length_penalty, stable_beam_search_length_penalty),
     "int32_dequant_overflow": (naive_int32_dequant_overflow, stable_int32_dequant_overflow),
     "norm": (naive_norm, stable_norm),
+    "incremental_mean": (naive_incremental_mean, stable_incremental_mean),
 }

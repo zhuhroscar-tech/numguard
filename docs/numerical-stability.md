@@ -1312,6 +1312,72 @@ and that every stable counterpart still actually passes -- proving
 these are live regression tests targeting the specific overflow/
 underflow boundaries, not decorative claims.
 
+## Incremental (streaming) mean
+
+**Textbook/reference definition:** the mean of a stream of batches
+folded in one at a time must equal the mean of all the data seen so
+far, regardless of how many separate calls it took to accumulate --
+folding the same batch in `N` times must return exactly that batch's
+own mean, unchanged by `N`.
+
+**Naive formula** (`naive_incremental_mean`): models scikit-learn's
+`_incremental_mean_and_var`, the update rule behind
+`StandardScaler.partial_fit` and every other incremental preprocessor
+built on it. Each call reconstructs `last_sum = last_mean *
+last_sample_count`, adds the new batch's own sum, and divides by the
+updated count. This is a real, currently-open bug: scikit-learn/
+scikit-learn#5602 ("`StandardScaler` `partial_fit` overflows"), open
+since 2015 and still open as of this writing. `last_sample_count`
+grows by the batch size on every call, so the RECONSTRUCTED
+`last_sum` grows without bound as more batches are folded in, even
+when every individual value and the true (unchanged) mean stay small
+and comfortably finite -- eventually `last_sum` itself overflows to
+`+inf`, poisoning every subsequent mean/variance computed from that
+scaler. Independently re-reproduced on this repository's installed
+`scikit-learn==1.9.1` before this kernel was accepted, using the
+issue's own repro script (`RuntimeWarning: overflow encountered in
+add`; final `partial_fit` mean `== inf`), per this repository's
+reproduce-before-accept discipline. Three fix attempts were opened
+over the years -- #11549 ("use more robust mean online computation"),
+#34664 ("prevent overflow in `_incremental_mean_and_var` for large
+values"), and #34874 ("prevent overflow in `StandardScaler.partial_
+fit` for large values") -- and all three were CLOSED WITHOUT MERGING,
+confirmed live via `gh api repos/scikit-learn/scikit-learn/pulls/34874`
+(`merged: false`, `merged_at: null`) immediately before this kernel's
+acceptance card was written, not assumed from the issue thread alone.
+
+**Stable formula** (`stable_incremental_mean`): the Chan/Golub/LeVeque
+delta-based merge that scikit-learn's own still-unmerged #34874
+proposes -- never reconstruct a running sum at all. Each new batch
+contributes only its own (small, same-scale-as-the-inputs) mean and a
+weight `new_count / updated_count` that always lies in `[0, 1]`; the
+running mean moves by a bounded `delta * weight` step on every call,
+so it can never leave the input values' own order of magnitude no
+matter how many batches are folded in. This is the same "never
+reconstruct an unbounded intermediate; keep every step bounded by the
+data's own scale" principle already used by this repository's
+`stable_norm` (scale-before-squaring) and `stable_sum` (Kahan
+compensation) kernels, applied here to a stateful multi-call update
+instead of a single-call formula.
+
+`incremental_mean`'s reference (`gold_incremental_mean`) computes the
+exact mean of the batch by direct 50-digit `Decimal` summation, with
+no incremental update and no dependence on the batch count at all --
+since every fixture folds in the SAME batch repeatedly, the gold mean
+is trivially independent of how many times it is folded in, which is
+exactly what distinguishes the naive kernel's batch-count-dependent
+drift from genuine ground truth. `numguard --check-naive-fails` (run
+in CI on every push) asserts that both magnitude-driven adversarial
+fixtures (`float64_large_uniform_many_batches`,
+`float32_large_uniform_many_batches`) still actually overflow at the
+CLI/audit tolerance level, that both control fixtures (a small batch
+folded in only 5 times, and a moderate-scale batch folded in 200
+times -- large batch count but no magnitude-driven overflow) still
+agree between naive and stable within tolerance, and that every
+stable counterpart still actually passes -- proving these are live
+regression tests targeting the specific batch-count/magnitude
+interaction that triggers the defect, not decorative claims.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

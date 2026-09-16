@@ -1718,4 +1718,67 @@ class TestNormOverflow:
     def test_reference_matches_direct_math_definition(self):
         gold = reference.gold_norm([3.0, 4.0])
         assert float(gold) == pytest.approx((3.0**2 + 4.0**2) ** 0.5, rel=1e-9)
-        assert float(gold) == pytest.approx(5.0, rel=1e-9)
+
+
+class TestIncrementalMeanOverflow:
+    """naive_incremental_mean reconstructs `last_sum = last_mean *
+    last_count` on every call -- last_count grows with every folded-in
+    batch, so last_sum grows without bound even when every individual
+    value and the true mean stay fixed and finite. stable_incremental_
+    mean instead merges via a bounded delta*weight step and never
+    reconstructs a running sum. Mirrors scikit-learn/scikit-learn#5602
+    (open since 2015, still open as of this writing; three fix attempts
+    -- #11549, #34664, #34874 -- all closed without merging), and was
+    independently reproduced against this host's installed scikit-learn
+    (1.9.1) via the issue's own repro script before this kernel was
+    accepted -- see kernels.py's naive_incremental_mean docstring for
+    the full citation."""
+
+    def test_naive_overflows_stable_survives_float64(self):
+        # 10 folded-in batches of a value comfortably below float64's
+        # ~1.8e308 max; naive's reconstructed sum still overflows
+        # because it grows with last_count, not with the data's scale.
+        naive = kernels.naive_incremental_mean([1e307, 1e307, 1e307], 10, "float64")
+        stable = kernels.stable_incremental_mean([1e307, 1e307, 1e307], 10, "float64")
+        assert math.isinf(naive) and naive > 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(1e307, rel=1e-6)
+
+    def test_naive_overflows_stable_survives_float32(self):
+        naive = kernels.naive_incremental_mean([1e37, 1e37, 1e37], 15, "float32")
+        stable = kernels.stable_incremental_mean([1e37, 1e37, 1e37], 15, "float32")
+        assert math.isinf(naive) and naive > 0
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(1e37, rel=1e-3)
+
+    def test_both_agree_on_everyday_values(self):
+        # Control: small batch folded in only 5 times -- both formulas
+        # must agree closely with the true mean (3.0), unchanged
+        # regardless of how many times the same batch is repeated.
+        naive = kernels.naive_incremental_mean([1.0, 2.0, 3.0, 4.0, 5.0], 5, "float64")
+        stable = kernels.stable_incremental_mean([1.0, 2.0, 3.0, 4.0, 5.0], 5, "float64")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(3.0, rel=1e-9)
+        assert naive == pytest.approx(stable, rel=1e-9)
+
+    def test_moderate_scale_many_batches_both_survive(self):
+        # 200 folded-in batches at a moderate scale -- large batch
+        # count but no magnitude-driven overflow; both formulas
+        # correctly converge to the true unchanged mean (200.0),
+        # confirming this defect is magnitude-triggered, not a
+        # function of batch count alone.
+        naive = kernels.naive_incremental_mean([100.0, 200.0, 300.0], 200, "float64")
+        stable = kernels.stable_incremental_mean([100.0, 200.0, 300.0], 200, "float64")
+        assert math.isfinite(naive)
+        assert naive == pytest.approx(200.0, rel=1e-9)
+        assert naive == pytest.approx(stable, rel=1e-9)
+
+    def test_reference_matches_direct_math_definition(self):
+        gold = reference.gold_incremental_mean([1.0, 2.0, 3.0, 4.0, 5.0], 5)
+        assert float(gold) == pytest.approx(3.0, rel=1e-9)
+        # Repeating the same batch any number of times must not change
+        # the gold mean -- it is computed by direct summation with no
+        # incremental update at all, so it is trivially independent of
+        # a batch count that never appears in its own formula.
+        gold_many = reference.gold_incremental_mean([1.0, 2.0, 3.0, 4.0, 5.0], 500)
+        assert float(gold_many) == pytest.approx(3.0, rel=1e-9)

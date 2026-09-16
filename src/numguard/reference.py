@@ -759,3 +759,20 @@ def gold_norm(values: Sequence[float]) -> Decimal:
     return ctx.sqrt(total)
 
 
+def gold_incremental_mean(values: Sequence[float], num_batches: int) -> Decimal:
+    """Exact mean of `values` repeated `num_batches` times, computed at
+    50-digit Decimal precision by direct summation with no fixed-width
+    intermediate and no incremental/streaming update at all -- since
+    every batch is identical, folding it in N times must converge to
+    exactly the same value as a single batch's own mean (this is the
+    independent ground truth for scikit-learn/scikit-learn#5602's
+    naive_incremental_mean, which instead drifts toward `inf` as N
+    grows, and for stable_incremental_mean's delta-based merge)."""
+    ctx = _ctx()
+    xs = _to_decimals(values)
+    total = ctx.create_decimal(0)
+    for x in xs:
+        total = ctx.add(total, x)
+    return ctx.divide(total, ctx.create_decimal(len(xs)))
+
+
