@@ -362,9 +362,35 @@ a blog post or a framework-internal function you have to trust blindly.
   *stateful, multi-call* update rule's own bookkeeping (rediscovering
   a scale-unbounded quantity every call), not in a single-call formula.
 
+- **Mann-Whitney U statistic** (`mannwhitney_u`): a real, currently-open
+  bug in `scipy.stats.mannwhitneyu`, tracked as scipy/scipy#24777 (open,
+  introduced by PR#23870 in scipy v1.17.0 and still present in this
+  repo's installed `scipy==1.18.1`, reproduced live from the issue's
+  own MRE before acceptance). The asymptotic-method U-statistic is
+  computed as `U1 = R1 - n1*(n1+1)/2` where `R1` is the rank sum of the
+  first sample; scipy casts the rank array to the CALLER's input dtype
+  (float32/float16) before this subtraction, so for large samples where
+  `R1` and `n1*(n1+1)/2` are both large numbers of similar magnitude
+  (both grow like `n^2`), the float32 difference suffers catastrophic
+  cancellation: float32's 24-bit mantissa is exact for integers only up
+  to `2**24` (~16.78M), and typical n1 in the low thousands already
+  puts the rank sum at that boundary. The naive kernel here reproduces
+  scipy's actual cast-then-subtract code path exactly (`float32_large_n_
+  rank_sum_cancellation` fixture: true U1=2518, naive reports 2516.0);
+  the stable kernel keeps the rank sum and subtraction in float64
+  throughout and only reports the final U at the audited dtype, the
+  same "delay lossy arithmetic to the very end" principle this repo's
+  `pearson_correlation`/`variance` kernels already use. Unlike `norm`
+  above, this is not a range-overflow bug -- it is a precision-loss bug
+  that silently returns a wrong (but plausible, non-`inf`/`NaN`)
+  statistic and p-value with no warning at the affected dtype/size, and
+  it also reproduces (via the SAME rank-sum-precision mechanism, not a
+  distinct bug) at moderate n purely from float16's narrower mantissa
+  (`float16_moderate_n_range_breakdown` fixture, n1=65, n2=5).
+
 ## What this does
 
-For each of twenty-nine kernels (`logsumexp`, `softmax`, `cross_entropy`,
+For each of thirty-one kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `variance`, `layer_norm`, `rms_norm`, `kl_divergence`, `online_softmax`,
 `masked_softmax`, `sum`, `rope_cos`, `int8_add`, `hll_register`,
 `focal_loss_grad`, `pearson_correlation`, `weighted_sampling_key`,
@@ -372,7 +398,8 @@ For each of twenty-nine kernels (`logsumexp`, `softmax`, `cross_entropy`,
 `speculative_reject`, `weight_decay`, `gradient_accumulation_bias`,
 `longrope_factor_select`, `squared_euclidean_distance`,
 `bpe_pair_count_overflow`, `beam_search_length_penalty`,
-`int32_dequant_overflow`, `norm`, `incremental_mean`),
+`int32_dequant_overflow`, `norm`, `incremental_mean`, `genlaguerre`,
+`mannwhitney_u`),
 across three dtypes (`float16`, `float32`, `float64` -- `int8_add`,
 `hll_register`, `bpe_pair_count_overflow`, and `int32_dequant_overflow`
 are scored at `float64`

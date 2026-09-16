@@ -819,3 +819,43 @@ def gold_genlaguerre(n: int, alpha: float, x: float) -> Decimal:
     return l_prev1
 
 
+def gold_mannwhitney_u(x_values: Sequence[float], y_values: Sequence[float]) -> Decimal:
+    """Mann-Whitney U1 statistic (rank-sum form) computed at 50-digit
+    Decimal precision: rank the combined sample (average rank on ties,
+    exactly per the standard definition), sum x's ranks as R1, then
+    U1 = R1 - n1*(n1+1)/2. This is the ground truth for scipy/scipy#24777:
+    scipy.stats.mannwhitneyu casts intermediate rank sums to the INPUT
+    dtype (float32/float16) before this subtraction, so for large samples
+    R1 and n1*(n1+1)/2 are both large numbers of similar magnitude and
+    their float32 difference suffers catastrophic cancellation -- this
+    reference never touches float32/float16 at any step, only Decimal,
+    so it is not subject to that cancellation regardless of what dtype
+    the kernel under test is auditing.
+    """
+    ctx = _ctx()
+    n1 = len(x_values)
+    combined = [(float(v), 0) for v in x_values] + [(float(v), 1) for v in y_values]
+    n = len(combined)
+    order = sorted(range(n), key=lambda i: combined[i][0])
+    ranks = [ctx.create_decimal(0)] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and combined[order[j + 1]][0] == combined[order[i]][0]:
+            j += 1
+        avg_rank = ctx.divide(
+            ctx.add(ctx.create_decimal(i + 1), ctx.create_decimal(j + 1)),
+            ctx.create_decimal(2),
+        )
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg_rank
+        i = j + 1
+    r1 = ctx.create_decimal(0)
+    for idx, (_, grp) in enumerate(combined):
+        if grp == 0:
+            r1 = ctx.add(r1, ranks[idx])
+    n1_d = ctx.create_decimal(n1)
+    u1 = ctx.subtract(r1, ctx.divide(ctx.multiply(n1_d, ctx.add(n1_d, ctx.create_decimal(1))), ctx.create_decimal(2)))
+    return u1
+
+

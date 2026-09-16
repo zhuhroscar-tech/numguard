@@ -1447,6 +1447,64 @@ dtype -- proving this is a live regression test targeting the specific
 n/alpha/x magnitude interaction that triggers the defect, not a
 decorative claim.
 
+## Mann-Whitney U statistic
+
+**Textbook/reference definition:** the Mann-Whitney U statistic for
+two independent samples x (size n1) and y (size n2) is computed by
+ranking the combined sample (ties get the average of their tied rank
+positions), summing the first sample's ranks as `R1`, then
+`U1 = R1 - n1*(n1+1)/2`. Every step of the rank computation itself
+(assigning integer or half-integer ranks) is exact regardless of
+precision; only the final subtraction is at risk.
+
+**Naive formula** (`naive_mannwhitney_u`): reproduces
+`scipy.stats.mannwhitneyu`'s actual `asymptotic`-method code path. This
+is a real, currently-open bug: scipy/scipy#24777 ("Unstable behavior
+of `stats.mannwhitneyu` from v1.17.0"), introduced by PR#23870 (which
+made the function cast its internal rank array to the CALLER's input
+dtype, e.g. `float32`, before completing the U-statistic computation)
+and still open as of this writing -- reproduced live from the issue's
+own minimal repro (`n1=n2=4000`, `float32` vs `float64` input, same
+values) against this repo's installed `scipy==1.18.1` before this
+kernel was accepted, per this repository's reproduce-before-accept
+discipline. `R1` (the rank sum) and `n1*(n1+1)/2` both grow like `n^2`
+and are close in magnitude for realistic samples, so once the rank
+array and the subtraction are cast down to `float32`, this is the same
+catastrophic-cancellation shape as this repo's `variance`/
+`pearson_correlation` kernels: float32's 24-bit mantissa is exact for
+integers only up to `2**24` (~16.78M), and a rank sum for `n1` in the
+low thousands already sits at that boundary, so the subtraction loses
+several bits of precision that never show up as `inf`/`NaN` -- just a
+silently wrong (but entirely plausible-looking) U statistic and
+p-value, with no warning from scipy at the affected dtype/size.
+
+**Stable formula** (`stable_mannwhitney_u`): keeps the rank sum and the
+`n1*(n1+1)/2` subtraction in `float64` throughout, regardless of the
+caller's input dtype, and only reports the final U at the audited
+dtype -- the same "delay lossy arithmetic to the very end" principle
+already used by this repo's `pearson_correlation`/`variance` kernels.
+Since scipy has not (as of this writing) proposed or merged a fix, this
+stable kernel is this repository's own independently-designed
+mitigation, not a port of an upstream patch (unlike, e.g.,
+`incremental_mean`'s stable formula, which mirrors scikit-learn's own
+still-unmerged fix PR).
+
+`mannwhitney_u`'s reference (`gold_mannwhitney_u`) computes the same
+rank-and-subtract definition independently at 50-digit `Decimal`
+precision (average-rank tie-breaking included), never touching
+`float32`/`float16` at any step. `numguard --check-naive-fails` (run in
+CI on every push) asserts that the float32 large-n fixture and the
+float16 moderate-n fixture both actually fail at the naive path and
+pass at the stable path, and that the small everyday control fixture
+(n1=5, n2=4, one tied value) agrees between naive and stable within
+tolerance at every dtype -- proving this targets the specific
+dtype-cast-before-subtraction mechanism scipy/scipy#24777 documents,
+not a decorative claim. float16 is excluded from the large-n fixture
+(it overflows float16's ~65504 range outright at that size -- an
+unrelated range limitation, not this cancellation bug) but included at
+a smaller n where the same cancellation mechanism still triggers from
+float16's narrower mantissa alone.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

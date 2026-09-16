@@ -119,6 +119,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "norm": "Vector 2-norm",
         "incremental_mean": "Incremental (streaming) mean",
         "genlaguerre": "Generalized Laguerre polynomial evaluation",
+        "mannwhitney_u": "Mann-Whitney U statistic",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

@@ -2191,6 +2191,69 @@ GENLAGUERRE_FIXTURES = [
 ]
 
 
+MANNWHITNEY_U_FIXTURES = [
+    Fixture(
+        "everyday_small_control_with_tie",
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        "Small control case (n1=5, n2=4) including one tied value "
+        "(3.0 present in both groups, exercising average-rank "
+        "tie-breaking) -- true U1 = 2.5 exactly. No cancellation risk "
+        "at this size; naive and stable agree at every dtype, "
+        "confirming neither formula's guard logic corrupts the "
+        "ordinary/well-conditioned case.",
+        q_values=[3.0, 6.0, 7.0, 8.0],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float16_moderate_n_range_breakdown",
+        # x: 1..64 plus one high-rank outlier (67) -- an adversarial
+        # search maximizing |naive-stable| for n1~65, n2~5 at float16
+        # (analogous in shape to the float32 fixture below, but at a
+        # size where float16's ~2**11 exact-integer boundary, not
+        # float32's ~2**24, is the limiting factor).
+        [float(v) for v in list(range(1, 65)) + [67]],
+        "n1=65, n2=5 (total 70): x is almost the bottom 64 ranks plus "
+        "one outlier near the top; y is the remaining top ranks. True "
+        "U1 = 2 exactly. This size is small enough that float16's "
+        "~65504 range does not overflow (unlike the larger float32 "
+        "fixture below), isolating the SAME dtype-cast-before-"
+        "subtraction cancellation mechanism (scipy/scipy#24777) "
+        "purely from float16's ~2**11 (2048) exact-integer boundary: "
+        "naive (cast-to-input-dtype-before-subtract, matching scipy's "
+        "actual code path) reports U1=4.0, off by 2 from the true 2 "
+        "(a 100% relative error, comparable in kind and mechanism to "
+        "the float32 fixture's error at far larger n); stable "
+        "(accumulate in float64, report at the end) matches exactly.",
+        q_values=[65.0, 66.0, 68.0, 69.0, 70.0],
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "float32_large_n_rank_sum_cancellation",
+        # x: 1..5801 followed by a single high-rank outlier (rank 8320
+        # of 8322 total) -- generated once via a documented adversarial
+        # search maximizing |naive-stable| for n1~5800, n2~2500 (the
+        # scipy#24777 issue's own reported n1=n2=4000 regime, adapted
+        # to a smaller-but-still-cancelling size for a faster fixture).
+        [float(v) for v in list(range(1, 5802)) + [8320]],
+        "n1=5802, n2=2520 (total 8322): x is nearly the bottom 5801 "
+        "ranks plus one outlier near the top; y is the remaining "
+        "middle-to-top ranks. True U1 = 2518 exactly. At this size "
+        "R1 (~1.7e7) and n1*(n1+1)/2 (~1.68e7) are both within a "
+        "factor of ~1 of float32's 2**24 (~1.68e7) exact-integer "
+        "limit -- exactly the mechanism scipy/scipy#24777 (open) "
+        "documents for scipy.stats.mannwhitneyu(..., dtype=float32): "
+        "naive (cast-to-input-dtype-before-subtract, matching scipy's "
+        "actual code path) reports U1=2516.0, off by 2 from the true "
+        "2518; stable (accumulate in float64, report at the end) "
+        "matches exactly. float64-only excluded here since float64's "
+        "~15-17 digits absorb this n without meaningful cancellation "
+        "(verified: naive==stable==gold at float64 for this fixture).",
+        q_values=[float(v) for v in list(range(5802, 8320)) + [8321, 8322]],
+        dtypes=("float32",),
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -2222,6 +2285,7 @@ FIXTURES_BY_KERNEL = {
     "norm": NORM_FIXTURES,
     "incremental_mean": INCREMENTAL_MEAN_FIXTURES,
     "genlaguerre": GENLAGUERRE_FIXTURES,
+    "mannwhitney_u": MANNWHITNEY_U_FIXTURES,
 }
 
 

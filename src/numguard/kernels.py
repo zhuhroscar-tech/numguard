@@ -1760,6 +1760,78 @@ def stable_genlaguerre(values, alpha: float, x: float, dtype: str) -> float:
         return float(l_prev1)
 
 
+# --- Mann-Whitney U statistic (rank-sum, dtype-cast catastrophic
+# cancellation) -----------------------------------------------------
+
+def _rank_average(a: np.ndarray) -> np.ndarray:
+    """Average-rank the elements of `a` (ties share the mean of their
+    tied rank positions), always computed and returned as float64 --
+    this helper is dtype-agnostic; the naive/stable kernels below
+    decide separately whether to cast the resulting rank array (and
+    the subsequent sum/subtraction) down to the audited dtype."""
+    n = len(a)
+    order = np.argsort(a, kind="stable")
+    ranks = np.empty(n, dtype=np.float64)
+    ranks[order] = np.arange(1, n + 1, dtype=np.float64)
+    sorted_a = a[order]
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and sorted_a[j + 1] == sorted_a[i]:
+            j += 1
+        if j > i:
+            avg = (i + 1 + j + 1) / 2.0
+            for k in range(i, j + 1):
+                ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+
+def naive_mannwhitney_u(x_values, y_values, dtype: str) -> float:
+    """scipy.stats.mannwhitneyu's own asymptotic-method U1 computation
+    (scipy/scipy#24777, open as of this kernel's addition): rank the
+    combined sample, then cast the rank array to the INPUT dtype
+    before summing and before the `R1 - n1*(n1+1)/2` subtraction --
+    exactly scipy's `_mannwhitneyu.py` behavior (ranks cast via
+    `xp.astype(ranks, dtype)` to match the caller's float32/float16
+    input, introduced in scipy PR#23870). For large samples R1 and
+    n1*(n1+1)/2 are both O(n^2) and close in magnitude, so their
+    float32 difference is a classic catastrophic-cancellation setup:
+    float32's 24-bit mantissa is exact for integers only up to 2**24,
+    and typical n1~5000-6000 rank sums already sit at that boundary.
+    """
+    dt = DTYPES[dtype]
+    x = _arr(x_values, dtype)
+    y = _arr(y_values, dtype)
+    n1 = dt(len(x))
+    combined = np.concatenate([np.asarray(x_values, dtype=np.float64), np.asarray(y_values, dtype=np.float64)])
+    ranks = _rank_average(combined).astype(dt)
+    with np.errstate(over="ignore", invalid="ignore"):
+        r1 = np.sum(ranks[: len(x)])
+        u1 = r1 - n1 * (n1 + dt(1)) / dt(2)
+    return float(u1)
+
+
+def stable_mannwhitney_u(x_values, y_values, dtype: str) -> float:
+    """The straightforward fix (not yet merged upstream as of this
+    kernel's addition -- scipy/scipy#24777 remains open): keep the
+    rank sum and the `n1*(n1+1)/2` subtraction in float64 regardless
+    of the caller's input dtype, and only report/round the final U to
+    the audited dtype at the very end. Ranks are exact small integers
+    or half-integers (ties) with no cancellation risk of their own;
+    the fix is purely about which precision the SUM and SUBTRACTION
+    happen in, matching the same delay-lossy-arithmetic-to-the-end
+    principle already used by this repo's other kernels."""
+    x = _arr(x_values, dtype)
+    y = _arr(y_values, dtype)
+    n1 = float(len(x))
+    combined = np.concatenate([np.asarray(x_values, dtype=np.float64), np.asarray(y_values, dtype=np.float64)])
+    ranks = _rank_average(combined)
+    r1 = np.sum(ranks[: len(x)])
+    u1 = r1 - n1 * (n1 + 1) / 2
+    return float(u1)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1791,4 +1863,5 @@ KERNELS = {
     "norm": (naive_norm, stable_norm),
     "incremental_mean": (naive_incremental_mean, stable_incremental_mean),
     "genlaguerre": (naive_genlaguerre, stable_genlaguerre),
+    "mannwhitney_u": (naive_mannwhitney_u, stable_mannwhitney_u),
 }
