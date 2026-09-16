@@ -776,3 +776,46 @@ def gold_incremental_mean(values: Sequence[float], num_batches: int) -> Decimal:
     return ctx.divide(total, ctx.create_decimal(len(xs)))
 
 
+def gold_genlaguerre(n: int, alpha: float, x: float) -> Decimal:
+    """Generalized Laguerre polynomial L_n^(alpha)(x), computed at
+    50-digit Decimal precision via the standard three-term polynomial
+    recurrence:
+
+        L_0 = 1
+        L_1 = 1 + alpha - x
+        L_k = ((2k-1+alpha-x) L_{k-1} - (k-1+alpha) L_{k-2}) / k
+
+    This is the SAME recurrence scipy's own C++ implementation uses
+    for genuine (Python) integer n (see scipy/special/orthogonal_
+    eval.pxd, eval_genlaguerre_l) -- reimplemented independently here
+    at 50-digit precision rather than reused from scipy, so this
+    reference does not share any code path with either kernel under
+    test. It is the ground truth for scipy/scipy#13800: scipy's
+    eval_genlaguerre(n, alpha, x) uses this exact recurrence when n is
+    a genuine int, but instead uses the numerically-fragile closed
+    form binom(n+alpha, n) * hyp1f1(-n, alpha+1, x) whenever n is
+    passed as a float (even an integer-valued one, e.g. 100.0) -- this
+    reference always uses the safe recurrence regardless of how `n` is
+    typed by the caller, matching scipy's own stable code path."""
+    ctx = _ctx()
+    n = int(n)
+    alpha_d = ctx.create_decimal(repr(float(alpha)))
+    x_d = ctx.create_decimal(repr(float(x)))
+    if n == 0:
+        return ctx.create_decimal(1)
+    l_prev2 = ctx.create_decimal(1)  # L_0
+    l_prev1 = ctx.add(ctx.add(ctx.create_decimal(1), alpha_d), ctx.minus(x_d))  # L_1
+    if n == 1:
+        return l_prev1
+    for k in range(2, n + 1):
+        kk = ctx.create_decimal(k)
+        a_coef = ctx.add(ctx.add(ctx.multiply(ctx.create_decimal(2), kk), ctx.create_decimal(-1)), ctx.subtract(alpha_d, x_d))
+        b_coef = ctx.add(ctx.subtract(kk, ctx.create_decimal(1)), alpha_d)
+        l_new = ctx.divide(
+            ctx.subtract(ctx.multiply(a_coef, l_prev1), ctx.multiply(b_coef, l_prev2)),
+            kk,
+        )
+        l_prev2, l_prev1 = l_prev1, l_new
+    return l_prev1
+
+

@@ -9,6 +9,8 @@ docs/numerical-stability.md for the derivation of each.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 DTYPES = {"float16": np.float16, "float32": np.float32, "float64": np.float64}
@@ -1668,6 +1670,96 @@ def stable_incremental_mean(values, num_batches: int, dtype: str) -> float:
         return float(last_mean)
 
 
+# --- generalized Laguerre polynomial eval -----------------------------
+#
+# See scipy/scipy#13800 (open since 2021, verified live via `gh issue
+# view 13800 --repo scipy/scipy --json state` immediately before this
+# kernel was written, not assumed from the issue text alone; also
+# independently reproduced from scratch against this host's installed
+# scipy 1.18.1 -- the current release as of this writing -- confirming
+# eval_genlaguerre(100., 100., 100.) still returns a value wrong by
+# ~39 orders of magnitude compared to the integer-n code path's result
+# for the identical mathematical inputs).
+# scipy's own C++ source (scipy/special/orthogonal_eval.pxd,
+# eval_genlaguerre vs eval_genlaguerre_l) confirms the root cause: the
+# float-n path evaluates the closed form binom(n+alpha, n) *
+# hyp1f1(-n, alpha+1, x) term-by-term, whose factors individually grow
+# and shrink by dozens of orders of magnitude and nearly cancel, while
+# the (safe) int-n path instead uses the three-term polynomial
+# recurrence, whose intermediate values stay the same order of
+# magnitude as the final answer throughout.
+def naive_genlaguerre(values, alpha: float, x: float, dtype: str) -> float:
+    """Textbook closed-form evaluation: binom(n+alpha, n) times the
+    confluent hypergeometric series 1F1(-n, alpha+1, x), built up
+    term-by-term via the standard ratio-of-consecutive-terms
+    recurrence `term_{k} = term_{k-1} * (-(n-k+1) * x) / (k * (alpha +
+    k))`, all accumulated at the kernel's own `dtype` precision --
+    exactly the formula/precision scipy's float-n eval_genlaguerre
+    code path uses (see scipy/special/orthogonal_eval.pxd,
+    `eval_genlaguerre`)."""
+    dt = DTYPES[dtype]
+    (n_raw,) = values
+    n = int(round(float(n_raw)))
+    with np.errstate(over="ignore", invalid="ignore"):
+        if float(alpha).is_integer():
+            binom = dt(math.comb(n + int(alpha), n))
+        else:
+            binom = dt(
+                math.exp(
+                    math.lgamma(n + alpha + 1)
+                    - math.lgamma(n + 1)
+                    - math.lgamma(alpha + 1)
+                )
+            )
+        alpha_t = dt(alpha)
+        x_t = dt(x)
+        term = dt(1.0)
+        total = dt(1.0)
+        for k in range(1, n + 1):
+            num = dt(-n + k - 1) * x_t
+            den = dt(k) * (alpha_t + dt(k))
+            term = term * num / den
+            total = total + term
+        return float(dt(binom * total))
+
+
+def stable_genlaguerre(values, alpha: float, x: float, dtype: str) -> float:
+    """Three-term polynomial recurrence -- the SAME formula scipy's own
+    C++ code already uses for genuine (Python) integer n (see
+    scipy/special/orthogonal_eval.pxd, `eval_genlaguerre_l`), applied
+    here regardless of how `n` is typed by the caller:
+
+        L_0 = 1
+        L_1 = 1 + alpha - x
+        L_k = ((2k-1+alpha-x) L_{k-1} - (k-1+alpha) L_{k-2}) / k
+
+    Every intermediate L_k stays the same order of magnitude as the
+    final polynomial value (no separately-huge binomial coefficient or
+    separately-tiny hypergeometric-series factor ever appears), so
+    nothing here can individually overflow, underflow, or cancel the
+    way the naive closed form's two factors do."""
+    dt = DTYPES[dtype]
+    (n_raw,) = values
+    n = int(round(float(n_raw)))
+    alpha_t = dt(alpha)
+    x_t = dt(x)
+    if n == 0:
+        return float(dt(1.0))
+    with np.errstate(over="ignore", invalid="ignore"):
+        l_prev2 = dt(1.0)
+        l_prev1 = dt(1.0) + alpha_t - x_t
+        if n == 1:
+            return float(l_prev1)
+        for k in range(2, n + 1):
+            kk = dt(k)
+            l_new = (
+                (dt(2) * kk - dt(1) + alpha_t - x_t) * l_prev1
+                - (kk - dt(1) + alpha_t) * l_prev2
+            ) / kk
+            l_prev2, l_prev1 = l_prev1, l_new
+        return float(l_prev1)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1698,4 +1790,5 @@ KERNELS = {
     "int32_dequant_overflow": (naive_int32_dequant_overflow, stable_int32_dequant_overflow),
     "norm": (naive_norm, stable_norm),
     "incremental_mean": (naive_incremental_mean, stable_incremental_mean),
+    "genlaguerre": (naive_genlaguerre, stable_genlaguerre),
 }

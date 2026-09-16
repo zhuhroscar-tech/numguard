@@ -1811,3 +1811,80 @@ class TestIncrementalMeanOverflow:
         # a batch count that never appears in its own formula.
         gold_many = reference.gold_incremental_mean([1.0, 2.0, 3.0, 4.0, 5.0], 500)
         assert float(gold_many) == pytest.approx(3.0, rel=1e-9)
+
+
+class TestGenlaguerreCancellation:
+    """naive_genlaguerre evaluates binom(n+alpha, n) * hyp1f1(-n,
+    alpha+1, x) term-by-term -- the closed form scipy's own
+    eval_genlaguerre(n, alpha, x) uses whenever n is passed as a float
+    (even an integer-valued one, e.g. 100.0). The binomial coefficient
+    and hypergeometric-series factors individually grow/shrink by
+    dozens of orders of magnitude and nearly cancel, while
+    stable_genlaguerre uses the SAME three-term polynomial recurrence
+    scipy's own C++ code already uses for genuine (Python) integer n.
+    Mirrors scipy/scipy#13800 (open since 2021, still open as of this
+    writing -- verified live via `gh issue view 13800 --repo
+    scipy/scipy --json state` before this kernel was accepted), and
+    was independently reproduced against this host's installed scipy
+    (1.18.1) via the issue's own repro before acceptance -- see
+    kernels.py's naive_genlaguerre docstring for the full citation."""
+
+    def test_naive_wrong_sign_stable_correct_float64(self):
+        # scipy/scipy#13800's own exact reported case:
+        # eval_genlaguerre(100., 100., 100.) is wrong by ~39 orders of
+        # magnitude relative to the true value (this kernel's own
+        # naive closed-form implementation does not need to bit-for-
+        # bit replicate scipy's internal binom/hyp1f1 routines to
+        # demonstrate the same cancellation defect -- the relative
+        # error alone already far exceeds any plausible floating-point
+        # rounding budget).
+        gold = reference.gold_genlaguerre(100, 100.0, 100.0)
+        naive = kernels.naive_genlaguerre([100.0], 100.0, 100.0, "float64")
+        stable = kernels.stable_genlaguerre([100.0], 100.0, 100.0, "float64")
+        assert math.isfinite(naive) and math.isfinite(stable)
+        rel_naive = abs((naive - float(gold)) / float(gold))
+        assert rel_naive > 1e30  # wrong by dozens of orders of magnitude
+        assert stable == pytest.approx(float(gold), rel=1e-9)
+
+    def test_naive_severe_relative_error_stable_survives_float64(self):
+        gold = reference.gold_genlaguerre(60, 60.0, 60.0)
+        naive = kernels.naive_genlaguerre([60.0], 60.0, 60.0, "float64")
+        stable = kernels.stable_genlaguerre([60.0], 60.0, 60.0, "float64")
+        rel_naive = abs((naive - float(gold)) / float(gold))
+        rel_stable = abs((stable - float(gold)) / float(gold))
+        assert rel_naive > 1e6  # off by many orders of magnitude
+        assert rel_stable < 1e-9  # matches to float64 precision
+
+    def test_naive_overflow_stable_survives_float32(self):
+        gold = reference.gold_genlaguerre(30, 30.0, 30.0)
+        naive = kernels.naive_genlaguerre([30.0], 30.0, 30.0, "float32")
+        stable = kernels.stable_genlaguerre([30.0], 30.0, 30.0, "float32")
+        assert math.isfinite(naive) and math.isfinite(stable)
+        rel_naive = abs((naive - float(gold)) / float(gold))
+        rel_stable = abs((stable - float(gold)) / float(gold))
+        assert rel_naive > 1e5
+        assert rel_stable < 1e-4
+
+    def test_both_agree_on_everyday_small_n(self):
+        # Control: n=alpha=x=3 is small enough that both formulas agree
+        # closely with the true value (-2.5) at every dtype.
+        gold = reference.gold_genlaguerre(3, 3.0, 3.0)
+        for dtype, tol in (("float16", 5e-2), ("float32", 1e-4), ("float64", 1e-9)):
+            naive = kernels.naive_genlaguerre([3.0], 3.0, 3.0, dtype)
+            stable = kernels.stable_genlaguerre([3.0], 3.0, 3.0, dtype)
+            assert naive == pytest.approx(float(gold), rel=tol, abs=1e-2)
+            assert stable == pytest.approx(float(gold), rel=tol, abs=1e-2)
+
+    def test_reference_matches_independent_mpmath_oracle(self):
+        # Cross-check the Decimal reference itself against a
+        # completely independent library-based oracle (mpmath's own
+        # laguerre()), not just against this repo's own kernels --
+        # guards against a bug shared by reference.py and both
+        # kernels.py formulas simultaneously.
+        mpmath = pytest.importorskip("mpmath")
+        mpmath.mp.dps = 50
+        for n in (10, 30, 60, 100):
+            gold = reference.gold_genlaguerre(n, float(n), float(n))
+            oracle = mpmath.laguerre(n, n, n)
+            rel_err = abs((mpmath.mpf(gold) - oracle) / oracle)
+            assert rel_err < mpmath.mpf("1e-40")

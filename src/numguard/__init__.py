@@ -7,14 +7,15 @@ focal_loss_grad, pearson_correlation, weighted_sampling_key,
 geometric_mean, p2_quantile, repetition_penalty, speculative_reject,
 weight_decay, gradient_accumulation_bias, longrope_factor_select,
 squared_euclidean_distance, bpe_pair_count_overflow,
-beam_search_length_penalty, int32_dequant_overflow, norm, and
-incremental_mean against an independent high-precision (decimal.Decimal)
-reference on adversarial fixtures, at float16/float32/float64 precision
-(int8_add and hll_register are scored at float64 only, since their inputs
-are integer codes/register values, not a dtype-swept float array; bpe_pair_count_
-overflow and int32_dequant_overflow are likewise float64-only, since
-they audit integer accumulator/subtraction arithmetic, not a
-dtype-swept float array).
+beam_search_length_penalty, int32_dequant_overflow, norm,
+incremental_mean, and genlaguerre against an independent high-precision
+(decimal.Decimal) reference on adversarial fixtures, at
+float16/float32/float64 precision (int8_add and hll_register are scored
+at float64 only, since their inputs are integer codes/register values,
+not a dtype-swept float array; bpe_pair_count_overflow and
+int32_dequant_overflow are likewise float64-only, since they audit
+integer accumulator/subtraction arithmetic, not a dtype-swept float
+array).
 """
 
-__version__ = "0.26.1"
+__version__ = "0.27.0"

@@ -135,6 +135,21 @@ class Fixture:
     # from scikit-learn/scikit-learn#5602's own repro. None for every
     # other kernel.
     im_num_batches: Optional[int] = None
+    # Generalized-Laguerre-polynomial parameters, used only by
+    # genlaguerre fixtures -- `values` holds `[n]` (the polynomial
+    # degree, an integer wrapped as a one-element float sequence to
+    # match this field's shared type) and these two fields give the
+    # order parameter alpha and evaluation point x. See
+    # scipy/scipy#13800: `eval_genlaguerre(n, alpha, x)` evaluates the
+    # textbook binom(n+alpha, n) * hyp1f1(-n, alpha+1, x) closed form,
+    # whose two factors individually grow/shrink by many orders of
+    # magnitude and cancel -- for integer-valued float n this closed
+    # form is used instead of the numerically-safe three-term
+    # recurrence scipy already uses for genuine (Python) int n, so the
+    # naive path silently loses most or all significant digits (or
+    # overflows outright) well before either factor alone would.
+    gl_alpha: Optional[float] = None
+    gl_x: Optional[float] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -2073,6 +2088,109 @@ INCREMENTAL_MEAN_FIXTURES = [
 ]
 
 
+# eval_genlaguerre(n, alpha, x) repro from scipy/scipy#13800 (open
+# since 2021, verified live -- via `gh issue view 13800 --repo
+# scipy/scipy --json state` -- to still be open, and independently
+# reproduced from scratch against this host's installed scipy 1.18.1,
+# the current release as of this writing, before this fixture was
+# written): scipy evaluates float-typed n via the closed form
+# binom(n+alpha, n) * hyp1f1(-n, alpha+1, x), whose two factors grow
+# and shrink by dozens of orders of magnitude and nearly cancel for
+# n=alpha=x, instead of the three-term polynomial recurrence scipy
+# itself already uses for genuine Python int n (confirmed identical
+# formula/mechanism via `scipy/special/orthogonal_eval.pxd`'s
+# `eval_genlaguerre`/`eval_genlaguerre_l` cython source). n=alpha=x is
+# chosen because it is exactly scipy's own bug-report shape (n=alpha=
+# x=100) and produces the fastest-growing cancellation.
+GENLAGUERRE_FIXTURES = [
+    Fixture(
+        "everyday_small_n",
+        [3.0],
+        "n=alpha=x=3, deep inside the well-behaved small-n regime -- "
+        "both the naive closed form and the stable recurrence agree "
+        "closely with the true value (-2.5) at every dtype.",
+        gl_alpha=3.0,
+        gl_x=3.0,
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float64_moderate_n_precision_loss",
+        [20.0],
+        "n=alpha=x=20 -- both formulas stay finite in float64, but the "
+        "naive closed form has already lost enough significant digits "
+        "to relative error ~1.3e-6 (exceeding this tool's 1e-9 float64 "
+        "tolerance), while the recurrence-based stable form still "
+        "matches the 50-digit Decimal reference to ~15-16 digits.",
+        gl_alpha=20.0,
+        gl_x=20.0,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "float64_large_n_severe_cancellation",
+        [60.0],
+        "n=alpha=x=60 -- scipy's own bug-report neighborhood (its "
+        "issue uses n=alpha=x=100, reproduced separately below at "
+        "float32/float64): the naive closed form's binom and hyp1f1 "
+        "factors have grown/shrunk by ~33 orders of magnitude each, "
+        "and their product is wrong by a factor of ~3.2e16 relative "
+        "to the true value, while the recurrence stays accurate to "
+        "~15-16 significant digits.",
+        gl_alpha=60.0,
+        gl_x=60.0,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "float64_extreme_n_qualitative_sign_flip",
+        [100.0],
+        "n=alpha=x=100 -- scipy/scipy#13800's own exact reported case "
+        "(eval_genlaguerre(100., 100., 100.)): scipy's real naive path "
+        "returns -1.236100091246446e+68 there, wrong by ~39 orders of "
+        "magnitude AND the wrong sign versus the correct integer-n "
+        "result. This tool's own from-scratch naive_genlaguerre "
+        "reimplementation of the same closed-form formula (a "
+        "different code path/evaluation order than scipy's Cython/C "
+        "internals, so it lands on a different specific wrong value) "
+        "independently reproduces the same order-of-magnitude failure "
+        "-- ~39 orders of magnitude off the true value -- demonstrating "
+        "the underlying cancellation defect is a property of the "
+        "*formula*, not one specific implementation's rounding path.",
+        gl_alpha=100.0,
+        gl_x=100.0,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "float32_moderate_n_overflow",
+        [30.0],
+        "n=alpha=x=30 at float32: the naive closed form's intermediate "
+        "binom(60,30) factor (~1.2e17) already exceeds what float32 "
+        "can carry through the subsequent hyp1f1-term recurrence "
+        "without compounding rounding error, producing a result wrong "
+        "by 9 orders of magnitude, while the stable recurrence (whose "
+        "intermediate terms stay the same order of magnitude as the "
+        "final answer throughout) remains accurate to float32 "
+        "precision.",
+        gl_alpha=30.0,
+        gl_x=30.0,
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "float16_small_n_early_breakdown",
+        [5.0],
+        "n=alpha=x=5 -- float16's ~3-4 significant decimal digits are "
+        "narrow enough that even this small a degree already separates "
+        "the two formulas: naive is off by ~12.5% (relative error "
+        "1.25e-1, well outside this tool's 5e-2 float16 tolerance) "
+        "while the recurrence-based stable form stays within it "
+        "(~1.1e-2). Demonstrates the same defect mechanism surfaces at "
+        "a dramatically smaller n once float16's narrow mantissa is "
+        "the limiting factor, not just at float64's large-n regime.",
+        gl_alpha=5.0,
+        gl_x=5.0,
+        dtypes=("float16",),
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -2103,6 +2221,7 @@ FIXTURES_BY_KERNEL = {
     "int32_dequant_overflow": INT32_DEQUANT_OVERFLOW_FIXTURES,
     "norm": NORM_FIXTURES,
     "incremental_mean": INCREMENTAL_MEAN_FIXTURES,
+    "genlaguerre": GENLAGUERRE_FIXTURES,
 }
 
 

@@ -1390,6 +1390,63 @@ stable counterpart still actually passes -- proving these are live
 regression tests targeting the specific batch-count/magnitude
 interaction that triggers the defect, not decorative claims.
 
+## Generalized Laguerre polynomial evaluation
+
+**Textbook/reference definition:** the generalized Laguerre polynomial
+`L_n^(alpha)(x)` satisfies the three-term recurrence `L_0 = 1`,
+`L_1 = 1 + alpha - x`, `L_k = ((2k-1+alpha-x) L_{k-1} - (k-1+alpha)
+L_{k-2}) / k`; every intermediate value in this recurrence stays the
+same order of magnitude as the final polynomial value.
+
+**Naive formula** (`naive_genlaguerre`): the textbook closed form
+`binom(n+alpha, n) * 1F1(-n, alpha+1, x)` (the confluent hypergeometric
+series), built up term-by-term via the standard ratio-of-consecutive-
+terms recurrence. This is a real, currently-open bug: scipy/scipy#13800
+("`eval_genlaguerre` gives wrong outputs for large floating-point
+inputs"), open since 2021 and still open as of this writing (verified
+live via `gh issue view 13800 --repo scipy/scipy --json state`
+immediately before this kernel was accepted). scipy's own
+`eval_genlaguerre(n, alpha, x)` uses exactly this closed form whenever
+`n` is passed as a Python `float` -- even an integer-valued one, e.g.
+`100.0` -- while its own C++ source (`scipy/special/orthogonal_eval.
+pxd`, comparing `eval_genlaguerre` against `eval_genlaguerre_l`)
+confirms it uses the SAFE three-term recurrence instead whenever `n`
+is a genuine Python `int`. The binomial coefficient and hypergeometric-
+series factors individually grow and shrink by dozens of orders of
+magnitude and nearly cancel for `n=alpha=x`, so the float-n path
+silently loses most or all significant digits (scipy's own reported
+case, `eval_genlaguerre(100., 100., 100.)`, is wrong by roughly 39
+orders of magnitude and even the wrong sign relative to the integer-n
+result for the identical mathematical inputs) -- independently
+reproduced from scratch against this host's installed
+`scipy==1.18.1` (the current release as of this writing) before this
+kernel was accepted, per this repository's reproduce-before-accept
+discipline.
+
+**Stable formula** (`stable_genlaguerre`): the SAME three-term
+polynomial recurrence scipy's own C++ code already uses for genuine
+integer `n`, applied here regardless of how `n` is typed by the
+caller. No separately-huge binomial coefficient or separately-tiny
+hypergeometric-series factor ever appears -- every intermediate `L_k`
+stays the same order of magnitude as the final answer, so nothing here
+can individually overflow, underflow, or cancel the way the naive
+closed form's two factors do.
+
+`genlaguerre`'s reference (`gold_genlaguerre`) computes the same
+three-term recurrence independently at 50-digit `Decimal` precision
+(not reused from scipy or from `stable_genlaguerre`'s own float
+implementation), and was itself cross-checked in the test suite
+against a completely independent oracle, `mpmath.laguerre`, agreeing
+to better than 1e-40 relative error at n=10,30,60,100. `numguard
+--check-naive-fails` (run in CI on every push) asserts that every
+adversarial fixture (n=alpha=x in {20, 30, 60, 100} depending on
+dtype) actually fails at the naive path and passes at the stable path,
+and that the small-n control fixtures (n=alpha=x=3, and n=alpha=x=5 at
+float16) agree between naive and stable within tolerance at every
+dtype -- proving this is a live regression test targeting the specific
+n/alpha/x magnitude interaction that triggers the defect, not a
+decorative claim.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

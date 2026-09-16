@@ -118,6 +118,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "int32_dequant_overflow": "int32 dequantization subtraction overflow",
         "norm": "Vector 2-norm",
         "incremental_mean": "Incremental (streaming) mean",
+        "genlaguerre": "Generalized Laguerre polynomial evaluation",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (
