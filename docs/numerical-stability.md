@@ -1505,6 +1505,69 @@ unrelated range limitation, not this cancellation bug) but included at
 a smaller n where the same cancellation mechanism still triggers from
 float16's narrower mantissa alone.
 
+## Modified Bessel function of the first kind, order 0 (I_0)
+
+**Textbook/reference definition:** `I_0(x) = sum_{k=0}^inf ((x/2)^k /
+k!)^2`, the power series for the modified Bessel function of the first
+kind. For large `|x|`, the practical evaluation method used by numpy,
+scipy, and (independently) JAX is the Cephes/Abramowitz-and-Stegun
+Chebyshev-polynomial approximation: `I_0(x) = exp(|x|) *
+chebyshev(32/|x| - 2, coeffs) / sqrt(|x|)` for `|x| > 8`. This formula
+is mathematically exact in infinite precision, but its *evaluation
+order* computes the full `exp(|x|)` factor -- which is strictly larger
+than the final answer, since the final answer divides it by
+`sqrt(|x|)` -- before ever applying that division.
+
+**Naive formula** (`naive_i0`): reproduces this exact evaluation order
+(`exp(|x|) * chebyshev(...) / sqrt(|x|)`, computed left-to-right). This
+is a real, currently-open-in-every-released-version bug:
+numpy/numpy#32209 ("`numpy.i0(713.0)` returns `inf` instead of a finite
+`float64` value") and the identical scipy/scipy#25823 ("`scipy.special.
+i0` prematurely overflows to `inf` at x=713 despite a finite float64
+result") -- both reproduced live against this host's actually-installed
+`numpy==2.5.2` and `scipy==1.18.1` before this kernel was accepted, per
+this repository's reproduce-before-accept discipline: both return
+`inf` for `x=713.0`, even though the true `I_0(713)` (~6.7051e+307) is
+comfortably below float64's ~1.7977e+308 max. The same failure is
+independently reported, still open, in a third and unrelated codebase:
+jax-ml/jax#39771 ("`jax.scipy.special.i0` overflows to `inf` for large
+finite float64 input"). All three libraries hit the same wall because
+`exp(|x|)` alone already overflows once `|x|` exceeds ~709 (float64),
+~88 (float32), or ~11 (float16) -- well before the true, correctly
+-scaled `I_0(x)` would overflow the same dtype's representable range.
+
+**Stable formula** (`stable_i0`): identical Chebyshev formula and
+identical `|x| <= 8` / `|x| > 8` branch split as `naive_i0` (a genuine
+drop-in fix, not a different algorithm), but for `|x| > 8` fuses the
+exponent, Chebyshev factor, and square root into a single log-domain
+expression before exponentiating exactly once:
+
+    I_0(x) = exp(|x| + log(chebyshev(...)) - 0.5*log(|x|))
+
+so only the final, correctly-scaled exponent is ever passed to `exp`.
+This is exactly the fix numpy/numpy#32223 ("MAINT: Handle overflow in
+i0 for large inputs like 713.0") and scipy/scipy#25981 ("BUG: special:
+fix premature overflow in i0 and i1") already merged to their
+respective `main` branches -- both independently confirmed, via `gh
+api repos/.../compare/...`, to be ancestors of `main` but NOT present
+in any tagged release as of this kernel's acceptance (numpy up to
+v2.5.3, scipy up to the installed v1.18.1) -- reproduced here from
+scratch rather than imported from either project.
+
+`i0`'s reference (`gold_i0`) computes the direct power-series
+definition independently at 50-digit `Decimal` precision, summing
+terms until one no longer changes the running total -- no Chebyshev
+polynomial, no `exp`/`sqrt` split, and no shared code path with either
+kernel under test, so it cannot mask a bug common to both. `numguard
+--check-naive-fails` (run in CI on every push) asserts that the
+float64 x=713, float32 x=90, and float16 x=11.2 fixtures all actually
+fail (return `inf`) at the naive path and pass (return the correct
+finite value, matching the Decimal reference) at the stable path, and
+that the small everyday x=5 control fixture agrees between naive and
+stable within tolerance at every dtype -- proving this targets the
+specific premature-overflow-before-division mechanism the three cited
+issues document, not a decorative claim.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

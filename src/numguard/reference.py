@@ -859,3 +859,44 @@ def gold_mannwhitney_u(x_values: Sequence[float], y_values: Sequence[float]) -> 
     return u1
 
 
+def gold_i0(x: float) -> Decimal:
+    """Modified Bessel function of the first kind, order 0: I_0(x).
+
+    Computed independently of both numpy's and this tool's own kernel
+    code paths via the direct power-series definition
+
+        I_0(x) = sum_{k=0}^inf ((x/2)^k / k!)^2
+               = sum_{k=0}^inf term_k,  term_0 = 1,
+                 term_k = term_{k-1} * (x / (2k))^2
+
+    at 50-digit Decimal precision, summed until a term no longer
+    changes the running total at that precision (never a fixed
+    iteration count, so it is correct for any magnitude of x this
+    tool's fixtures use). This is the ground truth for the shared
+    numpy/numpy#32209 + scipy/scipy#25823 + jax-ml/jax#39771 bug: all
+    three independently-maintained libraries' `i0` overflow to +inf
+    for x=713.0 (and other large-but-representable-in-float64 inputs)
+    because their shared Cephes-derived formula computes
+    `exp(x) * chebyshev(...) / sqrt(x)` with `exp(x)` alone already
+    overflowing before the division, even though the true I_0(x) is
+    finite and well within float64's representable range. This
+    reference uses none of that Chebyshev-polynomial machinery, so it
+    cannot share the same overflow defect.
+    """
+    ctx = _ctx()
+    x_d = ctx.create_decimal(repr(float(abs(x))))
+    half_x = ctx.divide(x_d, ctx.create_decimal(2))
+    term = ctx.create_decimal(1)
+    total = ctx.create_decimal(1)
+    k = 1
+    while k <= 20000:
+        ratio = ctx.divide(half_x, ctx.create_decimal(k))
+        term = ctx.multiply(term, ctx.multiply(ratio, ratio))
+        new_total = ctx.add(total, term)
+        if new_total == total:
+            break
+        total = new_total
+        k += 1
+    return total
+
+

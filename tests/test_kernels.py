@@ -1888,3 +1888,108 @@ class TestGenlaguerreCancellation:
             oracle = mpmath.laguerre(n, n, n)
             rel_err = abs((mpmath.mpf(gold) - oracle) / oracle)
             assert rel_err < mpmath.mpf("1e-40")
+
+
+class TestI0PrematureOverflow:
+    """naive_i0 reproduces the exact evaluation order numpy.i0 /
+    scipy.special.i0 use today for |x| > 8: exp(|x|) * chebyshev(...)
+    computed BEFORE dividing by sqrt(|x|). exp(|x|) alone overflows to
+    +inf once |x| exceeds ~709 (float64), ~88 (float32), or ~11
+    (float16) -- well before the true, smaller I_0(x) would itself
+    overflow the same dtype's representable range. Mirrors
+    numpy/numpy#32209 and scipy/scipy#25823 (both fixed on their
+    respective `main` branches but NOT present in any tagged release
+    as of this kernel's acceptance -- numpy up to v2.5.3, scipy up to
+    the installed v1.18.1, both verified live via `gh api .../compare/
+    ...` before acceptance), independently corroborated by the still-
+    open jax-ml/jax#39771. stable_i0 fuses the same formula into a
+    single log-domain expression before exponentiating once, exactly
+    the fix numpy/numpy#32223 and scipy/scipy#25981 already merged
+    upstream."""
+
+    def test_naive_overflows_stable_survives_float64_x713(self):
+        # numpy/numpy#32209's own exact reported case, independently
+        # reproduced live against this host's installed numpy (2.5.2)
+        # before this kernel was accepted: np.i0(713.0) == inf.
+        gold = reference.gold_i0(713.0)
+        naive = kernels.naive_i0([713.0], "float64")
+        stable = kernels.stable_i0([713.0], "float64")
+        assert math.isinf(naive)
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(float(gold), rel=1e-9)
+
+    def test_naive_overflows_stable_survives_float32_x90(self):
+        gold = reference.gold_i0(90.0)
+        naive = kernels.naive_i0([90.0], "float32")
+        stable = kernels.stable_i0([90.0], "float32")
+        assert math.isinf(naive)
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(float(gold), rel=1e-4)
+
+    def test_naive_overflows_stable_survives_float16_x11_2(self):
+        gold = reference.gold_i0(11.2)
+        naive = kernels.naive_i0([11.2], "float16")
+        stable = kernels.stable_i0([11.2], "float16")
+        assert math.isinf(naive)
+        assert math.isfinite(stable)
+        assert stable == pytest.approx(float(gold), rel=5e-2, abs=1e-1)
+
+    def test_both_agree_on_everyday_small_x(self):
+        # Control: x=5 stays in the |x|<=8 branch, where naive and
+        # stable are literally the same code path -- they must agree
+        # exactly (not just approximately) at every dtype.
+        gold = reference.gold_i0(5.0)
+        for dtype, tol in (("float16", 5e-2), ("float32", 1e-4), ("float64", 1e-9)):
+            naive = kernels.naive_i0([5.0], dtype)
+            stable = kernels.stable_i0([5.0], dtype)
+            assert naive == stable
+            assert naive == pytest.approx(float(gold), rel=tol, abs=1e-2)
+
+    def test_reference_matches_independent_mpmath_oracle(self):
+        # Cross-check the Decimal power-series reference against a
+        # completely independent library-based oracle (mpmath's own
+        # besseli), not just against this repo's own kernels --
+        # guards against a bug shared by reference.py and both
+        # kernels.py formulas simultaneously. mpmath is fed the same
+        # repr(float(x)) decimal string gold_i0 itself parses (not
+        # the raw python float), so both sides agree on which real
+        # number x actually represents -- otherwise e.g. x=11.2's
+        # true double-precision binary value (~11.19999999999999929)
+        # would silently disagree with the "11.2" decimal string by
+        # ~6e-16 relative, which would be a mismatched-input artifact
+        # of this test, not a defect in gold_i0.
+        mpmath = pytest.importorskip("mpmath")
+        mpmath.mp.dps = 50
+        for x in (5.0, 11.2, 90.0, 713.0):
+            gold = reference.gold_i0(x)
+            oracle = mpmath.besseli(0, mpmath.mpf(repr(float(x))))
+            rel_err = abs((mpmath.mpf(gold) - oracle) / oracle)
+            assert rel_err < mpmath.mpf("1e-40")
+
+    def test_naive_matches_actual_installed_numpy_where_finite(self):
+        # Sanity check that this kernel's own from-scratch naive_i0
+        # reimplementation genuinely tracks numpy's real (buggy)
+        # behavior rather than an imagined one -- compare directly
+        # against the installed numpy.i0 at values where numpy itself
+        # still returns something finite.
+        np = pytest.importorskip("numpy")
+        for x, dtype, np_dtype in (
+            (5.0, "float64", np.float64),
+            (7.5, "float32", np.float32),
+            (9.0, "float16", np.float16),
+        ):
+            expected = float(np.i0(np_dtype(x)))
+            actual = kernels.naive_i0([x], dtype)
+            assert actual == pytest.approx(expected, rel=1e-3)
+
+    def test_naive_matches_actual_installed_numpy_overflow(self):
+        # And confirm the actual installed numpy really does overflow
+        # at the same point this kernel's naive_i0 claims it does --
+        # this is the live reproduction this repository's
+        # reproduce-before-accept rule requires, encoded as a
+        # permanent regression test (not just a one-off check done
+        # before acceptance).
+        np = pytest.importorskip("numpy")
+        assert math.isinf(float(np.i0(np.float64(713.0))))
+        assert math.isinf(float(np.i0(np.float32(90.0))))
+        assert math.isinf(float(np.i0(np.float16(11.2))))

@@ -1832,6 +1832,104 @@ def stable_mannwhitney_u(x_values, y_values, dtype: str) -> float:
     return float(u1)
 
 
+# --- modified Bessel function of the first kind, order 0 (I_0) --------
+# numpy/numpy#32209 (fixed on numpy main, NOT yet in any released numpy
+# up to and including the installed 2.5.2/2.5.3) + the identical bug
+# independently confirmed in scipy/scipy#25823 (scipy.special.i0, fixed
+# on scipy main, NOT in installed scipy 1.18.1) and reported open in
+# jax-ml/jax#39771: all three libraries share the same Cephes-derived
+# Chebyshev-polynomial formula, which computes exp(x) first and divides
+# by sqrt(x) afterward -- so exp(x) alone overflows to inf for x large
+# enough, even when the true I_0(x) (which grows like exp(x)/sqrt(x),
+# strictly smaller than exp(x) itself) is still comfortably finite and
+# representable at the kernel's own dtype.
+
+_I0_A = (
+    -4.4153416464793395e-18, 3.3307945188222384e-17, -2.431279846547955e-16,
+    1.715391285555133e-15, -1.1685332877993451e-14, 7.676185498604936e-14,
+    -4.856446783111929e-13, 2.95505266312964e-12, -1.726826291441556e-11,
+    9.675809035373237e-11, -5.189795601635263e-10, 2.6598237246823866e-09,
+    -1.300025009986248e-08, 6.046995022541919e-08, -2.670793853940612e-07,
+    1.1173875391201037e-06, -4.4167383584587505e-06, 1.6448448070728896e-05,
+    -5.754195010082104e-05, 0.00018850288509584165, -0.0005763755745385824,
+    0.0016394756169413357, -0.004324309995050576, 0.010546460394594998,
+    -0.02373741480589947, 0.04930528423967071, -0.09490109704804764,
+    0.17162090152220877, -0.3046826723431984, 0.6767952744094761,
+)
+_I0_B = (
+    -7.233180487874754e-18, -4.830504485944182e-18, 4.46562142029676e-17,
+    3.461222867697461e-17, -2.8276239805165836e-16, -3.425485619677219e-16,
+    1.7725601330565263e-15, 3.8116806693526224e-15, -9.554846698828307e-15,
+    -4.150569347287222e-14, 1.54008621752141e-14, 3.8527783827421426e-13,
+    7.180124451383666e-13, -1.7941785315068062e-12, -1.3215811840447713e-11,
+    -3.1499165279632416e-11, 1.1889147107846439e-11, 4.94060238822497e-10,
+    3.3962320257083865e-09, 2.266668990498178e-08, 2.0489185894690638e-07,
+    2.8913705208347567e-06, 6.889758346916825e-05, 0.0033691164782556943,
+    0.8044904110141088,
+)
+
+
+def _chbevl(x, vals, dt):
+    """Clenshaw-style Chebyshev series evaluation, same recurrence as
+    numpy's private `numpy.lib._function_base_impl._chbevl` -- re-typed
+    at each step to the kernel's own dtype so float16/float32
+    intermediate rounding matches what a real numpy/scipy call at that
+    precision would see."""
+    b0 = dt(vals[0])
+    b1 = dt(0.0)
+    b2 = dt(0.0)
+    for v in vals[1:]:
+        b2 = b1
+        b1 = b0
+        b0 = x * b1 - b2 + dt(v)
+    return dt(0.5) * (b0 - b2)
+
+
+def naive_i0(values, dtype: str) -> float:
+    """The exact formula numpy.i0 / scipy.special.i0 use today (see
+    numpy/numpy#32209, scipy/scipy#25823): for |x| > 8, compute
+    exp(|x|) * chebyshev(...) and only divide by sqrt(|x|) afterward.
+    exp(|x|) alone overflows to +inf once |x| exceeds ~709 (float64),
+    ~88 (float32), or ~11 (float16) -- well before the true, smaller
+    I_0(x) = exp(|x|)/sqrt(|x|) * chebyshev(...) would itself overflow
+    the same dtype's representable range."""
+    dt = DTYPES[dtype]
+    (x_raw,) = values
+    ax = dt(abs(x_raw))
+    with np.errstate(over="ignore", invalid="ignore"):
+        if ax <= dt(8.0):
+            y = ax / dt(2.0) - dt(2.0)
+            return float(np.exp(ax) * _chbevl(y, _I0_A, dt))
+        y = dt(32.0) / ax - dt(2.0)
+        return float(np.exp(ax) * _chbevl(y, _I0_B, dt) / np.sqrt(ax))
+
+
+def stable_i0(values, dtype: str) -> float:
+    """Same Chebyshev formula and same two-branch split as naive_i0
+    (so this is a genuine drop-in fix, not a different algorithm), but
+    for |x| > 8 the exp/sqrt/divide sequence is fused into a single
+    log-domain expression before exponentiating once:
+
+        I_0(x) = exp(|x| + log(chebyshev(...)) - 0.5*log(|x|))
+
+    so the only exponentiation applied is to the final, correctly
+    -scaled exponent -- exactly the fix already merged to numpy's and
+    scipy's own main branches (numpy/numpy#32223, scipy/scipy#25981)
+    but not yet present in any released version as of this kernel's
+    acceptance, reproduced independently here rather than imported
+    from either project."""
+    dt = DTYPES[dtype]
+    (x_raw,) = values
+    ax = dt(abs(x_raw))
+    with np.errstate(over="ignore", invalid="ignore"):
+        if ax <= dt(8.0):
+            y = ax / dt(2.0) - dt(2.0)
+            return float(np.exp(ax) * _chbevl(y, _I0_A, dt))
+        y = dt(32.0) / ax - dt(2.0)
+        val = _chbevl(y, _I0_B, dt)
+        return float(np.exp(ax + np.log(val) - dt(0.5) * np.log(ax)))
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1864,4 +1962,5 @@ KERNELS = {
     "incremental_mean": (naive_incremental_mean, stable_incremental_mean),
     "genlaguerre": (naive_genlaguerre, stable_genlaguerre),
     "mannwhitney_u": (naive_mannwhitney_u, stable_mannwhitney_u),
+    "i0": (naive_i0, stable_i0),
 }

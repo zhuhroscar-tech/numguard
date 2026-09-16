@@ -120,6 +120,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "incremental_mean": "Incremental (streaming) mean",
         "genlaguerre": "Generalized Laguerre polynomial evaluation",
         "mannwhitney_u": "Mann-Whitney U statistic",
+        "i0": "Modified Bessel function of the first kind, order 0",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

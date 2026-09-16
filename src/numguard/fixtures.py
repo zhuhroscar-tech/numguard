@@ -2254,6 +2254,68 @@ MANNWHITNEY_U_FIXTURES = [
 ]
 
 
+I0_FIXTURES = [
+    Fixture(
+        "everyday_control_x5",
+        [5.0],
+        "x=5, deep inside the well-behaved small-argument (|x|<=8) "
+        "branch of the Chebyshev evaluation shared by naive and "
+        "stable -- both formulas take the identical code path here "
+        "(no exp/sqrt division at all), so they agree exactly at "
+        "every dtype; true I_0(5) ~ 27.2399.",
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float64_numpy_scipy_jax_shared_bug_x713",
+        [713.0],
+        "numpy/numpy#32209's own exact reported case, independently "
+        "re-reproduced live on this host's installed numpy (2.5.2) "
+        "and scipy (1.18.1) before this kernel was accepted -- both "
+        "return np.i0(713.0) == inf / scipy.special.i0(713.0) == inf "
+        "-- and cross-checked against the open jax-ml/jax#39771 "
+        "report of the identical failure in JAX's own i0. True "
+        "I_0(713) ~ 6.7051e+307, comfortably inside float64's "
+        "~1.7977e+308 max: naive_i0 computes exp(713) alone first "
+        "(~1.66e+309, already > float64 max) before ever dividing by "
+        "sqrt(713), so it returns +inf for a genuinely representable "
+        "answer; stable_i0 fuses the exponent in log-space first and "
+        "matches the 50-digit Decimal reference to float64 precision.",
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "float32_premature_overflow_x90",
+        [90.0],
+        "x=90: true I_0(90) ~ 5.1392e+37, well inside float32's "
+        "~3.4028e+38 max representable value -- but naive_i0's "
+        "intermediate exp(90) (~1.22e+39) already exceeds float32 "
+        "max before the /sqrt(90) division ever runs, so naive "
+        "returns +inf while stable_i0's log-domain fusion returns "
+        "the correct finite value, matching the Decimal reference. "
+        "Same overflow mechanism as the float64 x=713 fixture above, "
+        "reproduced at the dtype/magnitude float32 actually breaks "
+        "at (verified against this host's numpy 2.5.2: np.i0(np."
+        "float32(90.0)) == inf).",
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "float16_premature_overflow_x11_2",
+        [11.2],
+        "x=11.2: true I_0(11.2) ~ 8820.36, well inside float16's "
+        "65504 max representable value -- but naive_i0's "
+        "intermediate exp(11.2) (~73130, already > float16 max) "
+        "overflows before /sqrt(11.2) ever runs, so naive returns "
+        "+inf while stable_i0's log-domain fusion returns the "
+        "correct finite value close to the Decimal reference. Same "
+        "overflow mechanism as the float64/float32 fixtures above, "
+        "reproduced at the far smaller magnitude where float16's "
+        "narrow ~11-bit exponent range is the limiting factor "
+        "(verified against this host's numpy 2.5.2: np.i0(np."
+        "float16(11.2)) == inf).",
+        dtypes=("float16",),
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -2286,6 +2348,7 @@ FIXTURES_BY_KERNEL = {
     "incremental_mean": INCREMENTAL_MEAN_FIXTURES,
     "genlaguerre": GENLAGUERRE_FIXTURES,
     "mannwhitney_u": MANNWHITNEY_U_FIXTURES,
+    "i0": I0_FIXTURES,
 }
 
 
