@@ -1,5 +1,8 @@
 # numguard
 
+[![CI](https://github.com/zhuhroscar-tech/numguard/actions/workflows/ci.yml/badge.svg)](https://github.com/zhuhroscar-tech/numguard/actions/workflows/ci.yml) [![Latest release](https://img.shields.io/github/v/release/zhuhroscar-tech/numguard?display_name=tag&sort=semver)](https://github.com/zhuhroscar-tech/numguard/releases/latest)
+
+
 [![English](https://img.shields.io/badge/English-555555?style=flat)](README.md) [![简体中文](https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-555555?style=flat)](README.zh-CN.md)
 
 Compare naive and stable numerical kernels against independent high-precision references. numguard makes overflow, cancellation, integer-overflow and algorithmic bookkeeping errors reproducible with small, documented fixtures—not a full model or GPU benchmark.
