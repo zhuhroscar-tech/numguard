@@ -1586,13 +1586,20 @@ actually-installed `scipy==1.18.1` before this kernel was accepted:
 `scipy.special.lambertw(-1/np.e)` returns `nan+nanj` where the true
 value is exactly `-1` (both real branches, `k=0` and `k=-1`, meet at
 this point). At `z = -1/e` exactly, `p = sqrt(2*(e*z+1))` rounds to
-exactly `0.0` at every float dtype this kernel's fixtures cover
-(float16, float32, and float64 -- each verified directly, not assumed
-from the float64 case alone), landing the initial guess on `w = -1`
-exactly. The next Halley step evaluates
-`denom = e^w*(w+1) - (w+2)*f / (2*(w+1))`, whose `2*(w+1)` term is then
-exactly zero -- an unguarded 0/0 division that yields `nan` and
-propagates through every remaining iteration.
+exactly `0.0` in **float64** (verified directly on this development
+host), landing the initial guess on `w = -1` exactly. The next Halley
+step evaluates `denom = e^w*(w+1) - (w+2)*f / (2*(w+1))`, whose
+`2*(w+1)` term is then exactly zero -- an unguarded 0/0 division that
+yields `nan` and propagates through every remaining iteration. This
+repository's fixtures restrict the demonstration to float64 only:
+scipy.special.lambertw always evaluates internally in double precision
+regardless of the numpy input dtype, so float64 is the only dtype with
+a genuine upstream analog to audit -- and an earlier attempt to also
+claim the identical mechanism at float32/float16 was caught as a
+platform-dependent false generalization by real ubuntu-latest/glibc CI
+(glibc's `expf()` rounds `exp(-1)` one ULP differently from this
+development host's libm, so the naive float32 path there lands on a
+finite value instead of `nan`).
 
 Two attempted fixes exist upstream but neither is merged as of this
 kernel's acceptance (both confirmed live via `gh pr view --json
@@ -1620,16 +1627,15 @@ either kernel under test uses, so it cannot inherit the same
 non-decreasing on `w >= -1` (zero derivative only at `w = -1`), so
 bisection converges to the true root, including exactly `-1` at the
 branch point, from monotonicity alone. `numguard --check-naive-fails`
-(run in CI on every push) asserts that the float16/float32/float64
-exact-branch-point fixtures all actually fail (return `nan`) at the
-naive path and pass (return exactly `-1`, matching the Decimal
-reference) at the stable path, and that the everyday `z=1`/`z=-0.1`
-control fixtures and the float64 one-ULP-below-the-branch-point
-fixture all agree between naive and stable within tolerance at every
-dtype -- proving the failure is confined to the exact branch point,
-not a wider unstable region, and that this targets the specific
-0/0-at-`p=0` mechanism scipy/scipy#24770 documents, not a decorative
-claim.
+(run in CI on every push) asserts that the float64 exact-branch-point
+fixture actually fails (returns `nan`) at the naive path and passes
+(returns exactly `-1`, matching the Decimal reference) at the stable
+path, and that the everyday `z=1`/`z=-0.1` control fixtures and the
+float64 one-ULP-below-the-branch-point fixture all agree between naive
+and stable within tolerance -- proving the failure is confined to the
+exact branch point, not a wider unstable region, and that this targets
+the specific 0/0-at-`p=0` mechanism scipy/scipy#24770 documents, not a
+decorative claim.
 
 ## References
 

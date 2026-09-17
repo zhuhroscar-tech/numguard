@@ -2351,36 +2351,22 @@ LAMBERTW0_FIXTURES = [
         "and zeroing the next step's `2*(w+1)` denominator term -- an "
         "unguarded 0/0 that naive_lambertw0 returns as `nan`. True "
         "W_0(-1/e) is exactly -1 (both real branches meet here); "
-        "stable_lambertw0 detects `p == 0` and returns -1 directly.",
-    ),
-    Fixture(
-        "float32_scipy_24770_exact_branch_point",
-        [-1.0 / 2.718281828459045],
-        "The same scipy/scipy#24770 branch-point failure, reproduced "
-        "at float32 precision: `np.float32(-1/e)` also rounds `p = "
-        "sqrt(2*(e*z+1))` to exactly `0.0` at this dtype's narrower "
-        "~24-bit mantissa (verified directly: `np.float32(math.e) * "
-        "np.float32(-1/e) + np.float32(1.0) == np.float32(0.0)`), so "
-        "this is not a float64-only artifact of one specific "
-        "constant's rounding -- the same 0/0 mechanism recurs at "
-        "every dtype this kernel's fixtures cover. True W_0(-1/e) is "
-        "exactly -1; naive_lambertw0 returns nan, stable_lambertw0 "
-        "correctly returns -1.",
-        dtypes=("float32",),
-    ),
-    Fixture(
-        "float16_scipy_24770_exact_branch_point",
-        [-1.0 / 2.718281828459045],
-        "The same scipy/scipy#24770 branch-point failure, reproduced "
-        "at float16 precision: `np.float16(-1/e)` also rounds `p = "
-        "sqrt(2*(e*z+1))` to exactly `0.0` at this dtype's ~11-bit "
-        "mantissa (verified directly), confirming the failure "
-        "mechanism is about the *exact-zero* rounding of `p` at each "
-        "dtype's own precision, not a property unique to any one "
-        "binary representation of -1/e. True W_0(-1/e) is exactly "
-        "-1; naive_lambertw0 returns nan, stable_lambertw0 correctly "
-        "returns -1.",
-        dtypes=("float16",),
+        "stable_lambertw0 detects `p == 0` and returns -1 directly. "
+        "Restricted to float64 only (matching scipy's own reported "
+        "case, and matching that scipy.special.lambertw always "
+        "computes internally in double precision regardless of numpy "
+        "input dtype -- there is no genuine float32/float16 variant "
+        "of THIS scipy bug to audit): an earlier version of this "
+        "fixture set claimed the identical 0/0 mechanism also "
+        "reproduced at float32/float16, verified only on this "
+        "development host's libm; real ubuntu-latest/glibc CI (run "
+        "35285751778) showed the float32 case landing on a finite "
+        "value instead of nan there, because glibc's expf() rounds "
+        "exp(-1) one ULP differently, making `f` non-zero instead of "
+        "exactly zero at that dtype's branch point -- a platform-"
+        "dependent claim that was removed rather than left "
+        "unverified across OSes.",
+        dtypes=("float64",),
     ),
     Fixture(
         "float64_one_ulp_below_branch_point",

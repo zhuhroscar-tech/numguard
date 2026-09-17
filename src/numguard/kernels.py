@@ -1957,10 +1957,25 @@ def stable_i0(values, dtype: str) -> float:
 # `scipy.special.lambertw(-1/np.e)` returns `(nan+nanj)` where the true
 # value is exactly `-1` (both real branches k=0 and k=-1 meet here).
 # The failure is exact-branch-point-only: values one ULP away in either
-# direction (verified at float16/float32/float64 precision, not just
-# float64) already produce a finite, correct-to-tolerance result via
+# direction already produce a finite, correct-to-tolerance result via
 # the ordinary Halley iteration -- this is a razor-thin, easily-missed
 # edge case, not a broad accuracy problem with the algorithm.
+#
+# NOTE on dtype scope: this repository's fixtures restrict the
+# branch-point demonstration to float64 only. scipy.special.lambertw
+# always evaluates internally in double precision regardless of the
+# numpy input dtype, so float64 is the only dtype with a genuine
+# upstream analog to audit. An earlier version of this kernel also
+# claimed the identical 0/0 mechanism at float32/float16 (verified only
+# on this development host's libm); real ubuntu-latest/glibc CI showed
+# the naive float32 path landing on a finite value instead of `nan`
+# there, because glibc's `expf()` rounds `exp(-1)` one ULP differently,
+# making the Halley residual `f` non-zero instead of exactly zero at
+# that dtype's branch point on that platform. That claim was removed
+# rather than left as an unverified cross-platform assumption -- the
+# kernel functions themselves still accept any dtype (so `numguard
+# --kernel lambertw0 --dtype float32` runs without error), but no
+# fixture asserts the naive path fails at float32/float16.
 def naive_lambertw0(values, dtype: str) -> float:
     """Halley's iteration for W_0(z), started from the standard
     branch-point-adjacent initial guess `w0 = -1 + sqrt(2*(e*z+1))`,

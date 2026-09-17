@@ -2023,21 +2023,21 @@ class TestLambertW0BranchPoint:
         assert stable == pytest.approx(-1.0, abs=1e-15)
         assert stable == pytest.approx(float(gold), abs=1e-15)
 
-    def test_naive_nan_stable_minus_one_at_branch_point_float32(self):
+    def test_stable_correct_at_branch_point_float32_and_float16(self):
+        # stable_lambertw0's p_sq==0 guard is dtype-generic and must
+        # return -1 at every dtype regardless of platform libm
+        # rounding. Unlike the float64 case above, this test does NOT
+        # assert the naive path is nan here: whether p_sq itself rounds
+        # to exactly 0.0 (and hence whether the naive kernel's 0/0
+        # actually triggers) depends on the platform's libm rounding of
+        # exp() at float32/float16 -- verified to differ between this
+        # development host and ubuntu-latest/glibc in CI. Only the
+        # stable kernel's correctness is a portable claim here.
         import numpy as np
-        z0 = float(np.float32(-1.0 / math.e))
-        naive = kernels.naive_lambertw0([z0], "float32")
-        stable = kernels.stable_lambertw0([z0], "float32")
-        assert math.isnan(naive)
-        assert stable == pytest.approx(-1.0, abs=1e-6)
-
-    def test_naive_nan_stable_minus_one_at_branch_point_float16(self):
-        import numpy as np
-        z0 = float(np.float16(-1.0 / math.e))
-        naive = kernels.naive_lambertw0([z0], "float16")
-        stable = kernels.stable_lambertw0([z0], "float16")
-        assert math.isnan(naive)
-        assert stable == pytest.approx(-1.0, abs=1e-2)
+        for dtype, np_dtype, tol in (("float32", np.float32, 1e-6), ("float16", np.float16, 1e-2)):
+            z0 = float(np_dtype(-1.0 / math.e))
+            stable = kernels.stable_lambertw0([z0], dtype)
+            assert stable == pytest.approx(-1.0, abs=tol)
 
     def test_both_agree_on_everyday_values(self):
         # Control: away from the branch point, naive and stable take
