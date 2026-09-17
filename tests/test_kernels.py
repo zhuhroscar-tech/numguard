@@ -1886,7 +1886,11 @@ class TestGenlaguerreCancellation:
         for n in (10, 30, 60, 100):
             gold = reference.gold_genlaguerre(n, float(n), float(n))
             oracle = mpmath.laguerre(n, n, n)
-            rel_err = abs((mpmath.mpf(gold) - oracle) / oracle)
+            # mpmath.mpf() cannot construct directly from a Decimal object
+            # (it only accepts int/float/str/tuple/other-mpf) -- go through
+            # str() first, which mpf's from_str() path parses exactly like
+            # any other decimal literal, at full 50-digit precision.
+            rel_err = abs((mpmath.mpf(str(gold)) - oracle) / oracle)
             assert rel_err < mpmath.mpf("1e-40")
 
 
@@ -1963,7 +1967,9 @@ class TestI0PrematureOverflow:
         for x in (5.0, 11.2, 90.0, 713.0):
             gold = reference.gold_i0(x)
             oracle = mpmath.besseli(0, mpmath.mpf(repr(float(x))))
-            rel_err = abs((mpmath.mpf(gold) - oracle) / oracle)
+            # See the genlaguerre oracle test above: mpmath.mpf() cannot
+            # construct directly from a Decimal, so go through str() first.
+            rel_err = abs((mpmath.mpf(str(gold)) - oracle) / oracle)
             assert rel_err < mpmath.mpf("1e-40")
 
     def test_naive_matches_actual_installed_numpy_where_finite(self):

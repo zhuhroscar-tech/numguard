@@ -29,7 +29,7 @@ Homepage = "https://github.com/zhuhroscar-tech/numguard"
 numguard = "numguard.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov"]
+dev = ["pytest", "pytest-cov", "mpmath"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
