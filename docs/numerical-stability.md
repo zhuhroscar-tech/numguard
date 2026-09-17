@@ -1568,6 +1568,69 @@ stable within tolerance at every dtype -- proving this targets the
 specific premature-overflow-before-division mechanism the three cited
 issues document, not a decorative claim.
 
+## Lambert W function, principal branch (W_0)
+
+**Textbook/reference definition:** `W_0(z)` is the principal branch of
+the inverse of `w*exp(w)`. The standard practical evaluation method
+(used by scipy.special.lambertw, per Corless, Gonnet, Hare, Jeffrey,
+Knuth, "On the Lambert W Function", Adv. Comp. Math. 5 (1996) 329-359,
+eq. 4.22) is Halley's iteration inverting `w*exp(w)`, started from the
+first-order asymptotic approximation near the branch point at
+`z = -1/e`: `w0 = -1 + p`, `p = sqrt(2*(e*z + 1))`.
+
+**Naive formula** (`naive_lambertw0`): reproduces this exact algorithm
+with no special case for the branch point. This is a real, currently
+open bug: scipy/scipy#24770 ("`special.lambertw` gives `nan` for
+`-1/e`") -- independently reproduced live against this host's
+actually-installed `scipy==1.18.1` before this kernel was accepted:
+`scipy.special.lambertw(-1/np.e)` returns `nan+nanj` where the true
+value is exactly `-1` (both real branches, `k=0` and `k=-1`, meet at
+this point). At `z = -1/e` exactly, `p = sqrt(2*(e*z+1))` rounds to
+exactly `0.0` at every float dtype this kernel's fixtures cover
+(float16, float32, and float64 -- each verified directly, not assumed
+from the float64 case alone), landing the initial guess on `w = -1`
+exactly. The next Halley step evaluates
+`denom = e^w*(w+1) - (w+2)*f / (2*(w+1))`, whose `2*(w+1)` term is then
+exactly zero -- an unguarded 0/0 division that yields `nan` and
+propagates through every remaining iteration.
+
+Two attempted fixes exist upstream but neither is merged as of this
+kernel's acceptance (both confirmed live via `gh pr view --json
+state,mergedAt` immediately before acceptance): scipy/scipy#24896
+("BUG: fix lambertw(-1/e) returning nan at branch point") was CLOSED
+without merging (missing the project's required AI-authorship
+declaration, per a maintainer comment on the PR), and its linked
+upstream fix scipy/xsf#107 remains OPEN.
+
+**Stable formula** (`stable_lambertw0`): byte-for-byte the same Halley
+iteration as `naive_lambertw0`, except the initial-guess step checks
+whether `p_sq = 2*(e*z+1)` itself rounded to exactly `0.0` at the
+kernel's dtype -- the precise branch-point condition that would
+otherwise zero the first Halley denominator -- and if so returns `-1`
+directly (the known closed-form value at the branch point) instead of
+taking a division-by-zero step. Away from the branch point the two
+kernels are identical, so this cannot silently change any other
+result.
+
+`lambertw0`'s reference (`gold_lambertw0`) computes `W_0(z)` at
+50-digit `Decimal` precision via bisection on `f(w) = w*e^w - z` over
+`w >= -1` -- deliberately derivative-free and NOT the Halley iteration
+either kernel under test uses, so it cannot inherit the same
+0/0-at-the-branch-point failure mode being audited; `f` is monotonic
+non-decreasing on `w >= -1` (zero derivative only at `w = -1`), so
+bisection converges to the true root, including exactly `-1` at the
+branch point, from monotonicity alone. `numguard --check-naive-fails`
+(run in CI on every push) asserts that the float16/float32/float64
+exact-branch-point fixtures all actually fail (return `nan`) at the
+naive path and pass (return exactly `-1`, matching the Decimal
+reference) at the stable path, and that the everyday `z=1`/`z=-0.1`
+control fixtures and the float64 one-ULP-below-the-branch-point
+fixture all agree between naive and stable within tolerance at every
+dtype -- proving the failure is confined to the exact branch point,
+not a wider unstable region, and that this targets the specific
+0/0-at-`p=0` mechanism scipy/scipy#24770 documents, not a decorative
+claim.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing

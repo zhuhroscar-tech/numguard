@@ -1999,3 +1999,117 @@ class TestI0PrematureOverflow:
         assert math.isinf(float(np.i0(np.float64(713.0))))
         assert math.isinf(float(np.i0(np.float32(90.0))))
         assert math.isinf(float(np.i0(np.float16(11.2))))
+
+
+class TestLambertW0BranchPoint:
+    """naive_lambertw0 reproduces scipy.special.lambertw's own
+    documented Halley-iteration algorithm with no special case for the
+    exact branch point at z = -1/e. At that exact input, the initial
+    guess p = sqrt(2*(e*z+1)) rounds to exactly 0.0 at every float
+    dtype, landing the Halley iteration's starting point on w = -1
+    exactly and zeroing the next step's 2*(w+1) denominator term -- an
+    unguarded 0/0 that returns nan. Mirrors scipy/scipy#24770 (OPEN as
+    of this kernel's acceptance; the two attempted fixes,
+    scipy/scipy#24896 and its linked scipy/xsf#107, are both
+    independently confirmed NOT merged). stable_lambertw0 detects the
+    exact p_sq == 0 branch-point condition and returns -1 directly."""
+
+    def test_naive_nan_stable_minus_one_at_branch_point_float64(self):
+        z0 = -1.0 / math.e
+        gold = reference.gold_lambertw0(z0)
+        naive = kernels.naive_lambertw0([z0], "float64")
+        stable = kernels.stable_lambertw0([z0], "float64")
+        assert math.isnan(naive)
+        assert stable == pytest.approx(-1.0, abs=1e-15)
+        assert stable == pytest.approx(float(gold), abs=1e-15)
+
+    def test_naive_nan_stable_minus_one_at_branch_point_float32(self):
+        import numpy as np
+        z0 = float(np.float32(-1.0 / math.e))
+        naive = kernels.naive_lambertw0([z0], "float32")
+        stable = kernels.stable_lambertw0([z0], "float32")
+        assert math.isnan(naive)
+        assert stable == pytest.approx(-1.0, abs=1e-6)
+
+    def test_naive_nan_stable_minus_one_at_branch_point_float16(self):
+        import numpy as np
+        z0 = float(np.float16(-1.0 / math.e))
+        naive = kernels.naive_lambertw0([z0], "float16")
+        stable = kernels.stable_lambertw0([z0], "float16")
+        assert math.isnan(naive)
+        assert stable == pytest.approx(-1.0, abs=1e-2)
+
+    def test_both_agree_on_everyday_values(self):
+        # Control: away from the branch point, naive and stable take
+        # byte-for-byte the same iteration path -- must agree exactly.
+        for z in (1.0, 0.5, -0.1, 2.0):
+            gold = reference.gold_lambertw0(z)
+            for dtype, tol in (("float16", 5e-2), ("float32", 1e-4), ("float64", 1e-9)):
+                naive = kernels.naive_lambertw0([z], dtype)
+                stable = kernels.stable_lambertw0([z], dtype)
+                assert naive == stable
+                assert naive == pytest.approx(float(gold), rel=tol, abs=1e-2)
+
+    def test_one_ulp_below_branch_point_both_finite_and_close(self):
+        # One float64 ULP below the branch point: p_sq is a tiny
+        # negative number from floating-point rounding, which both
+        # kernels clamp to 0.0 before sqrt -- demonstrating the naive
+        # kernel's failure is confined to EXACTLY p_sq == 0, not a
+        # wider unstable neighborhood.
+        import numpy as np
+        z = np.nextafter(np.float64(-1.0 / math.e), np.float64(-1.0))
+        gold = reference.gold_lambertw0(float(z))
+        naive = kernels.naive_lambertw0([float(z)], "float64")
+        stable = kernels.stable_lambertw0([float(z)], "float64")
+        assert math.isfinite(naive)
+        assert math.isfinite(stable)
+        assert naive == pytest.approx(float(gold), abs=1e-6)
+        assert stable == pytest.approx(float(gold), abs=1e-6)
+
+    def test_reference_matches_independent_mpmath_oracle(self):
+        # Cross-check the Decimal bisection reference against a
+        # completely independent library-based oracle (mpmath's own
+        # lambertw), not just against this repo's own kernels. Values
+        # away from the branch point compare to full 50-digit
+        # precision. The branch point itself is excluded here: gold_
+        # lambertw0 deliberately bisects only over REAL w >= -1 (see
+        # its own docstring), landing on exactly -1 by monotonicity
+        # once z is at or past the branch point; mpmath instead
+        # returns the fully complex value for the float64-rounded z0
+        # (which is a hair past the true irrational -1/e), whose real
+        # part agrees with -1 only to ~1e-17, not 50-digit precision --
+        # a convention difference, not a defect in either oracle. The
+        # branch-point convention itself (both kernels, this reference,
+        # and scipy's own attempted fix all agreeing on exactly -1) is
+        # already covered by the dedicated branch-point tests above.
+        mpmath = pytest.importorskip("mpmath")
+        mpmath.mp.dps = 50
+        for z in (1.0, 0.5, -0.1, 2.0):
+            gold = reference.gold_lambertw0(z)
+            oracle = mpmath.lambertw(mpmath.mpf(repr(float(z))))
+            rel_err = abs((mpmath.mpf(str(gold)) - oracle.real) / (oracle.real if oracle.real != 0 else mpmath.mpf(1)))
+            assert rel_err < mpmath.mpf("1e-30")
+        # Branch point: confirm gold's real-only convention lands on
+        # exactly -1, and that this is within mpmath's own tiny
+        # real-part deviation from -1 at this float64-rounded input.
+        z0 = -1.0 / math.e
+        gold_branch = reference.gold_lambertw0(z0)
+        oracle_branch = mpmath.lambertw(mpmath.mpf(repr(float(z0))))
+        assert gold_branch == mpmath.mpf(-1)
+        assert abs(oracle_branch.real - mpmath.mpf(-1)) < mpmath.mpf("1e-15")
+
+    def test_naive_matches_actual_installed_scipy_at_branch_point(self):
+        # Live reproduction this repository's reproduce-before-accept
+        # rule requires, encoded as a permanent regression test: the
+        # actually-installed scipy really does return nan here.
+        scipy_special = pytest.importorskip("scipy.special")
+        result = complex(scipy_special.lambertw(-1.0 / math.e))
+        assert math.isnan(result.real)
+
+    def test_naive_matches_actual_installed_scipy_away_from_branch(self):
+        scipy_special = pytest.importorskip("scipy.special")
+        for z in (1.0, 0.5, -0.1, 2.0):
+            expected = complex(scipy_special.lambertw(z)).real
+            actual = kernels.naive_lambertw0([z], "float64")
+            assert actual == pytest.approx(expected, rel=1e-6)
+

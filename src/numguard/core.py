@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select", "squared_euclidean_distance", "bpe_pair_count_overflow", "beam_search_length_penalty", "int32_dequant_overflow", "norm", "incremental_mean", "genlaguerre", "mannwhitney_u", "i0")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select", "squared_euclidean_distance", "bpe_pair_count_overflow", "beam_search_length_penalty", "int32_dequant_overflow", "norm", "incremental_mean", "genlaguerre", "mannwhitney_u", "i0", "lambertw0")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -170,6 +170,10 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
         computed = fn(fixture.values, dtype)
         (x_raw,) = fixture.values
         gold = reference.gold_i0(x_raw)
+    elif kernel == "lambertw0":
+        computed = fn(fixture.values, dtype)
+        (z_raw,) = fixture.values
+        gold = reference.gold_lambertw0(z_raw)
     else:
         raise ValueError(f"not a scalar kernel: {kernel}")
 

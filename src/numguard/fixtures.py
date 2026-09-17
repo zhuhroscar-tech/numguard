@@ -2316,6 +2316,93 @@ I0_FIXTURES = [
 ]
 
 
+LAMBERTW0_FIXTURES = [
+    Fixture(
+        "everyday_control_z1",
+        [1.0],
+        "z=1, far from the branch point at -1/e -- naive and stable "
+        "kernels take byte-for-byte the same Halley iteration path "
+        "here (the branch-point guard never triggers), so they agree "
+        "exactly at every dtype; true W_0(1) ~ 0.567143.",
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "everyday_control_z_negative_tenth",
+        [-0.1],
+        "z=-0.1, negative but not close to the branch point at "
+        "-1/e ~ -0.367879 -- another ordinary-iteration control case "
+        "for both kernels; true W_0(-0.1) ~ -0.111833.",
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "float64_scipy_24770_exact_branch_point",
+        [-1.0 / 2.718281828459045],
+        "z = -1/e at float64 precision, scipy/scipy#24770's own exact "
+        "reported case (OPEN as of this kernel's acceptance; two "
+        "attempted fixes -- scipy/scipy#24896 and its linked "
+        "scipy/xsf#107 -- independently confirmed NOT merged via "
+        "`gh pr view --json state,mergedAt` immediately before "
+        "acceptance). Independently reproduced live on this host's "
+        "installed scipy (1.18.1): `scipy.special.lambertw(-1/np.e)` "
+        "returns `nan+nanj`. At this exact input, "
+        "`p = sqrt(2*(e*z+1))` rounds to exactly `0.0` in float64 "
+        "(verified: `np.float64(math.e) * np.float64(z) + 1.0 == "
+        "0.0`), landing the initial Halley guess on `w = -1` exactly "
+        "and zeroing the next step's `2*(w+1)` denominator term -- an "
+        "unguarded 0/0 that naive_lambertw0 returns as `nan`. True "
+        "W_0(-1/e) is exactly -1 (both real branches meet here); "
+        "stable_lambertw0 detects `p == 0` and returns -1 directly.",
+    ),
+    Fixture(
+        "float32_scipy_24770_exact_branch_point",
+        [-1.0 / 2.718281828459045],
+        "The same scipy/scipy#24770 branch-point failure, reproduced "
+        "at float32 precision: `np.float32(-1/e)` also rounds `p = "
+        "sqrt(2*(e*z+1))` to exactly `0.0` at this dtype's narrower "
+        "~24-bit mantissa (verified directly: `np.float32(math.e) * "
+        "np.float32(-1/e) + np.float32(1.0) == np.float32(0.0)`), so "
+        "this is not a float64-only artifact of one specific "
+        "constant's rounding -- the same 0/0 mechanism recurs at "
+        "every dtype this kernel's fixtures cover. True W_0(-1/e) is "
+        "exactly -1; naive_lambertw0 returns nan, stable_lambertw0 "
+        "correctly returns -1.",
+        dtypes=("float32",),
+    ),
+    Fixture(
+        "float16_scipy_24770_exact_branch_point",
+        [-1.0 / 2.718281828459045],
+        "The same scipy/scipy#24770 branch-point failure, reproduced "
+        "at float16 precision: `np.float16(-1/e)` also rounds `p = "
+        "sqrt(2*(e*z+1))` to exactly `0.0` at this dtype's ~11-bit "
+        "mantissa (verified directly), confirming the failure "
+        "mechanism is about the *exact-zero* rounding of `p` at each "
+        "dtype's own precision, not a property unique to any one "
+        "binary representation of -1/e. True W_0(-1/e) is exactly "
+        "-1; naive_lambertw0 returns nan, stable_lambertw0 correctly "
+        "returns -1.",
+        dtypes=("float16",),
+    ),
+    Fixture(
+        "float64_one_ulp_below_branch_point",
+        [-1.0 / 2.718281828459045 - 2.220446049250313e-16],
+        "One float64 ULP BELOW the branch point (still inside the "
+        "real domain z <= -1/e where W_0 is real): `p_sq` here is a "
+        "tiny negative number due to floating-point rounding of the "
+        "already-irrational e*z, which naive_lambertw0 clamps to "
+        "`0.0` (matching scipy's own domain-clamping convention) "
+        "before taking the square root -- this fixture demonstrates "
+        "that the 0/0 failure is confined to exactly `p_sq == 0`, "
+        "not a wider unstable region: naive and stable agree here "
+        "and both roughly match the true W_0 near the branch point "
+        "(~-1.0000000047, per the Decimal reference), a control case "
+        "showing the bug's boundary is razor-thin, not smeared "
+        "across a whole neighborhood.",
+        expect_naive_ok=True,
+        dtypes=("float64",),
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -2349,6 +2436,7 @@ FIXTURES_BY_KERNEL = {
     "genlaguerre": GENLAGUERRE_FIXTURES,
     "mannwhitney_u": MANNWHITNEY_U_FIXTURES,
     "i0": I0_FIXTURES,
+    "lambertw0": LAMBERTW0_FIXTURES,
 }
 
 

@@ -1930,6 +1930,108 @@ def stable_i0(values, dtype: str) -> float:
         return float(np.exp(ax + np.log(val) - dt(0.5) * np.log(ax)))
 
 
+# --- Lambert W function (principal branch, k=0) -----------------------
+#
+# W_0(z), the principal branch of the inverse of w*exp(w). Both kernels
+# use the same textbook algorithm scipy.special.lambertw itself
+# documents (Halley's iteration inverting w*exp(w), started from the
+# first-order asymptotic near the branch point, per Corless, Gonnet,
+# Hare, Jeffrey, Knuth, "On the Lambert W Function", Adv. Comp. Math. 5
+# (1996) 329-359, eq. 4.22): the initial guess is
+# w0 = -1 + p, p = sqrt(2*(e*z + 1)).
+#
+# This is the ground truth for scipy/scipy#24770 (OPEN, unfixed as of
+# this kernel's acceptance -- verified live via
+# `gh issue view 24770 --repo scipy/scipy --json state`, and the two
+# attempted fixes were independently checked to NOT be merged:
+# scipy/scipy#24896 was CLOSED without merging, its linked scipy/xsf#107
+# is still OPEN, both confirmed via `gh pr view --json state,mergedAt`
+# immediately before this kernel was accepted): at the exact branch
+# point z = -1/e, p = sqrt(0) = 0 exactly, so the initial guess lands on
+# w = -1 exactly. The next Halley step then evaluates
+# `denom = e^w*(w+1) - (w+2)*f / (2*(w+1))`, whose `2*(w+1)` term is
+# exactly zero at w = -1 -- an unguarded 0/0 division that produces
+# `nan`, which the iteration then propagates for the rest of its steps
+# and returns unchanged. Independently reproduced on this host's
+# currently-installed scipy (1.18.1) before acceptance:
+# `scipy.special.lambertw(-1/np.e)` returns `(nan+nanj)` where the true
+# value is exactly `-1` (both real branches k=0 and k=-1 meet here).
+# The failure is exact-branch-point-only: values one ULP away in either
+# direction (verified at float16/float32/float64 precision, not just
+# float64) already produce a finite, correct-to-tolerance result via
+# the ordinary Halley iteration -- this is a razor-thin, easily-missed
+# edge case, not a broad accuracy problem with the algorithm.
+def naive_lambertw0(values, dtype: str) -> float:
+    """Halley's iteration for W_0(z), started from the standard
+    branch-point-adjacent initial guess `w0 = -1 + sqrt(2*(e*z+1))`,
+    with NO special case for the exact branch point -- exactly scipy's
+    own documented algorithm before either attempted fix. At z = -1/e
+    exactly, `sqrt(2*(e*z+1))` is `sqrt(0) = 0`, landing the initial
+    guess on `w = -1` exactly, which makes the next Halley step's
+    `2*(w+1)` denominator term exactly zero: an unguarded division by
+    zero that yields `nan` and propagates through the remaining
+    iterations. This kernel restricts to REAL z <= 0 near the branch
+    point, where W_0(z) itself is real, so no complex arithmetic is
+    needed to demonstrate the bug."""
+    dt = DTYPES[dtype]
+    (z_raw,) = values
+    z = dt(z_raw)
+    e_dt = dt(math.e)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        p_sq = dt(2.0) * (e_dt * z + dt(1.0))
+        if p_sq < dt(0.0):
+            p_sq = dt(0.0)
+        w = dt(-1.0) + dt(np.sqrt(p_sq))
+        for _ in range(50):
+            ew = dt(np.exp(w))
+            f = w * ew - z
+            wp1 = w + dt(1.0)
+            denom = ew * wp1 - (w + dt(2.0)) * f / (dt(2.0) * wp1)
+            wnext = w - f / denom
+            if not np.isfinite(wnext):
+                return float(wnext)
+            if abs(wnext - w) < dt(1e-9) * max(abs(wnext), dt(1.0)):
+                return float(wnext)
+            w = wnext
+        return float(w)
+
+
+def stable_lambertw0(values, dtype: str) -> float:
+    """Identical Halley iteration, but the initial guess step first
+    checks whether `p = sqrt(2*(e*z+1))` itself underflowed to exactly
+    zero at this dtype's precision -- the exact branch-point condition
+    that would otherwise zero out the first Halley denominator. When it
+    has, this returns `-1` directly (the known closed-form value shared
+    by both real branches at the branch point) instead of taking a
+    division-by-zero Halley step. Away from the branch point, this
+    kernel is byte-for-byte the same iteration as the naive kernel, so
+    it cannot silently change results anywhere except this one
+    input."""
+    dt = DTYPES[dtype]
+    (z_raw,) = values
+    z = dt(z_raw)
+    e_dt = dt(math.e)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        p_sq = dt(2.0) * (e_dt * z + dt(1.0))
+        if p_sq < dt(0.0):
+            p_sq = dt(0.0)
+        if p_sq == dt(0.0):
+            return float(dt(-1.0))
+        w = dt(-1.0) + dt(np.sqrt(p_sq))
+        for _ in range(50):
+            ew = dt(np.exp(w))
+            f = w * ew - z
+            wp1 = w + dt(1.0)
+            denom = ew * wp1 - (w + dt(2.0)) * f / (dt(2.0) * wp1)
+            wnext = w - f / denom
+            if not np.isfinite(wnext):
+                return float(wnext)
+            if abs(wnext - w) < dt(1e-9) * max(abs(wnext), dt(1.0)):
+                return float(wnext)
+            w = wnext
+        return float(w)
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -1963,4 +2065,5 @@ KERNELS = {
     "genlaguerre": (naive_genlaguerre, stable_genlaguerre),
     "mannwhitney_u": (naive_mannwhitney_u, stable_mannwhitney_u),
     "i0": (naive_i0, stable_i0),
+    "lambertw0": (naive_lambertw0, stable_lambertw0),
 }

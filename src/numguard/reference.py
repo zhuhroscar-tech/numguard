@@ -900,3 +900,70 @@ def gold_i0(x: float) -> Decimal:
     return total
 
 
+def gold_lambertw0(z_raw: float) -> Decimal:
+    """Principal branch W_0(z) of the Lambert W function, computed at
+    50-digit Decimal precision via bisection on `f(w) = w*e^w - z` over
+    REAL `w` in `[-1, hi]` -- deliberately NOT the Halley/Newton
+    iteration used by either kernel under test in `kernels.py` (or by
+    scipy's own algorithm), and deliberately derivative-free, so this
+    reference cannot inherit the same 0/0-at-the-branch-point failure
+    mode being audited.
+
+    `f` is monotonically non-decreasing on `w >= -1` (its derivative
+    `e^w*(1+w)` is >= 0 there, with equality only at `w = -1`), so
+    ordinary bisection converges to the unique real root without ever
+    evaluating a derivative -- at `z = -1/e` exactly, `f(-1) =
+    -1/e - (-1/e) = 0` exactly, so the bisection converges to `w = -1`
+    from monotonicity alone, not from any special-cased knowledge of
+    the branch point.
+
+    Convention at/past the branch point: the REAL value passed in
+    (`z_raw`) is a float64/float32/float16 *rounding* of the true
+    irrational `-1/e`, which can round to a hair PAST the true branch
+    point (`z < -1/e` in exact arithmetic) even when the caller intends
+    "the branch point". In that case there is no real root and the true
+    mathematical `W_0` is complex with real part within ~1e-17 of `-1`
+    (verified against an independent mpmath cross-check in this
+    project's test suite) -- this function still returns exactly `-1`
+    for any such input, by construction of the one-sided `w >= -1`
+    bisection domain (`f(-1) >= 0` in that regime, so every candidate
+    midpoint tests non-negative and the bisection collapses onto its
+    own lower bound `-1`). This matches the shared convention this
+    kernel's fixtures, `stable_lambertw0`, and scipy's own attempted
+    fix (scipy/scipy#24896) all use at the branch point: both real
+    branches (k=0 and k=-1) are conventionally reported as meeting
+    exactly at `-1`, not as an unresolved complex value.
+
+    This is the ground truth for scipy/scipy#24770 (OPEN, unfixed as of
+    this kernel's acceptance): `scipy.special.lambertw(-1/np.e)`
+    returns `nan+nanj` where this reference (and the true value) is
+    exactly `-1`.
+    """
+    ctx = _ctx()
+    z = ctx.create_decimal(repr(float(z_raw)))
+    lo = ctx.create_decimal(-1)
+    hi = ctx.create_decimal(1)
+
+    def f(w):
+        return ctx.subtract(ctx.multiply(w, ctx.exp(w)), z)
+
+    # Expand the upper bound until f(hi) >= 0 (f is monotonic increasing
+    # past w=-1, so this always terminates for any z in this kernel's
+    # real domain).
+    for _ in range(200):
+        if f(hi) >= 0:
+            break
+        hi = ctx.multiply(hi, ctx.create_decimal(2))
+
+    for _ in range(200):
+        mid = ctx.divide(ctx.add(lo, hi), ctx.create_decimal(2))
+        fm = f(mid)
+        if fm == 0:
+            return mid
+        if fm < 0:
+            lo = mid
+        else:
+            hi = mid
+    return ctx.divide(ctx.add(lo, hi), ctx.create_decimal(2))
+
+
