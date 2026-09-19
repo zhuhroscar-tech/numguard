@@ -863,6 +863,63 @@ def stable_pearson_correlation(x_values, y_values, dtype: str) -> float:
     return max(min(r, 1.0), -1.0)
 
 
+# --- explained-variance regression metric --------------------------------
+
+def naive_explained_variance(y_true, y_pred, dtype: str) -> float:
+    """1 - Var(y_true - y_pred) / Var(y_true), with a "force_finite" 0/0
+    guard applied unconditionally regardless of sample count -- the exact
+    shape of scikit-learn's explained_variance_score(force_finite=True,
+    the library default). For a SINGLE sample (n=1), population variance
+    is always exactly 0 by definition (there is no spread to measure): a
+    single value's mean equals itself, so both the residual's variance
+    and y_true's variance collapse to 0 no matter what the prediction is.
+    That forces the 0/0 branch to report a "perfect fit" (1.0) for every
+    single-sample input, including a badly wrong prediction -- silently
+    turning LeaveOneOut cross-validation scored with this metric into an
+    always-1.0 result for any model, including one fit on pure noise.
+    This is scikit-learn/scikit-learn#34622 (confirmed open; reproduced
+    from scratch against the installed scikit-learn 1.9.1's actual
+    explained_variance_score before this kernel was written -- see this
+    repo's stewardship ledger). r2_score, explained_variance_score's own
+    documented sibling metric in the same library, already guards this
+    identical degenerate case and returns NaN with a warning instead;
+    explained_variance_score does not.
+    """
+    yt = _arr(y_true, dtype)
+    yp = _arr(y_pred, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        resid = (yt - yp).astype(dtype)
+        resid_mean = np.mean(resid)
+        numerator = np.mean((resid - resid_mean).astype(dtype) ** 2)
+        yt_mean = np.mean(yt)
+        denominator = np.mean((yt - yt_mean).astype(dtype) ** 2)
+        if denominator == 0:
+            return float(DTYPES[dtype](1.0) if numerator == 0 else DTYPES[dtype](0.0))
+        return float(1.0 - numerator / denominator)
+
+
+def stable_explained_variance(y_true, y_pred, dtype: str) -> float:
+    """Identical formula to the naive kernel above, but guards n<2 first
+    and returns NaN -- matching the convention r2_score already uses for
+    this same degenerate case in the same library (scikit-learn's own
+    fix proposal, PR#34754, adds exactly this n_samples<2 guard). Away
+    from n=1, this kernel is byte-for-byte the same computation as the
+    naive kernel, so it cannot silently change any other result."""
+    yt = _arr(y_true, dtype)
+    if yt.shape[0] < 2:
+        return float("nan")
+    yp = _arr(y_pred, dtype)
+    with np.errstate(over="ignore", invalid="ignore"):
+        resid = (yt - yp).astype(dtype)
+        resid_mean = np.mean(resid)
+        numerator = np.mean((resid - resid_mean).astype(dtype) ** 2)
+        yt_mean = np.mean(yt)
+        denominator = np.mean((yt - yt_mean).astype(dtype) ** 2)
+        if denominator == 0:
+            return float(DTYPES[dtype](1.0) if numerator == 0 else DTYPES[dtype](0.0))
+        return float(1.0 - numerator / denominator)
+
+
 # --- weighted-reservoir-sampling comparison key -------------------------
 
 def naive_weighted_sampling_key(u: float, weight: float, dtype: str) -> float:
@@ -2063,6 +2120,7 @@ KERNELS = {
     "hll_register": (naive_hll_register_term, stable_hll_register_term),
     "focal_loss_grad": (naive_focal_loss_grad, stable_focal_loss_grad),
     "pearson_correlation": (naive_pearson_correlation, stable_pearson_correlation),
+    "explained_variance": (naive_explained_variance, stable_explained_variance),
     "weighted_sampling_key": (naive_weighted_sampling_key, stable_weighted_sampling_key),
     "geometric_mean": (naive_geometric_mean, stable_geometric_mean),
     "p2_quantile": (naive_p2_quantile, stable_p2_quantile),

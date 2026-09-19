@@ -599,6 +599,46 @@ constant) returns `NaN` explicitly, matching `scipy`'s current
 identified by `numpy#32446`/`pandas#67023`, rather than an arbitrary
 clipped `+-1`.
 
+## Explained variance regression score
+
+**Textbook definition:** explained variance measures the fraction of a
+regression target's variance accounted for by a model's predictions,
+`EV = 1 - Var(y_true - y_pred) / Var(y_true)`, ranging up to 1.0
+(perfect fit). Its own documented sibling metric in the same library,
+`r2_score`, already guards the degenerate case where there is not
+enough data to define a variance at all (`n_samples < 2`) by returning
+`NaN` with a warning rather than a forced numeric verdict.
+
+**Naive formula** (`naive_explained_variance`): scikit-learn's actual
+shipped `explained_variance_score(force_finite=True)` (the library
+default) behavior -- when the denominator `Var(y_true)` is exactly 0,
+`force_finite` maps the resulting `0/0` to `1.0` ("perfect predictions")
+whenever the numerator is also 0, with no guard on sample count. For a
+SINGLE sample (`n=1`), population variance is always exactly `0` by
+definition (a single value's mean equals itself, leaving no spread to
+measure) -- so both `Var(y_true - y_pred)` and `Var(y_true)` collapse
+to `0` regardless of how wrong the prediction is, forcing a false
+"perfect fit" of `1.0` for every single-sample input. This is a real,
+currently open bug: `scikit-learn/scikit-learn#34622` (confirmed open
+via `gh issue view`; reproduced from scratch against the installed
+scikit-learn 1.9.1's actual `explained_variance_score` before this
+kernel was written -- `explained_variance_score([1.0], [2.0])` returns
+`1.0` despite the prediction being off by 100%). The issue's own
+description states the practical consequence directly: `LeaveOneOut`
+cross-validation scored with `explained_variance` silently reports a
+perfect `1.0` for any model, including one fit on pure noise, because
+every fold has exactly one held-out sample.
+
+**Stable formula** (`stable_explained_variance`): identical formula to
+the naive kernel, but returns `NaN` outright when `n_samples < 2` --
+matching the guard `r2_score` already applies to this exact same
+degenerate case in the same library, and the fix scikit-learn's own
+contributors proposed for `explained_variance_score` itself in
+`scikit-learn/scikit-learn#34754` (referenced from the open issue, not
+yet merged/released as of this kernel's authoring). Away from `n=1`,
+this kernel is byte-for-byte the same computation as the naive kernel,
+so it cannot silently change any ordinary multi-sample result.
+
 ## Weighted reservoir-sampling comparison key
 
 **Textbook definition:** Efraimidis & Spirakis's A-Res algorithm

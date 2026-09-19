@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select", "squared_euclidean_distance", "bpe_pair_count_overflow", "beam_search_length_penalty", "int32_dequant_overflow", "norm", "incremental_mean", "genlaguerre", "mannwhitney_u", "i0", "lambertw0")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "explained_variance", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select", "squared_euclidean_distance", "bpe_pair_count_overflow", "beam_search_length_penalty", "int32_dequant_overflow", "norm", "incremental_mean", "genlaguerre", "mannwhitney_u", "i0", "lambertw0")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -58,6 +58,25 @@ def _within_tolerance(computed: float, gold_f: float, dtype: str) -> bool:
     atol = ABS_TOLERANCE[dtype]
     rtol = DEFAULT_TOLERANCE[dtype]
     return abs(computed - gold_f) <= atol + rtol * abs(gold_f)
+
+
+def _both_nan_match(computed: float, gold: Decimal) -> bool:
+    """True when the gold reference is itself NaN (a mathematically
+    undefined input, e.g. Pearson correlation of a constant vector) AND
+    the kernel under test also returned NaN. Both `is_finite` and
+    `_within_tolerance` are meaningless once either side is NaN --
+    without this check, a kernel that correctly reports "undefined" by
+    returning NaN for an undefined-input fixture was scored `ok=False`
+    (via `is_finite=False` short-circuiting the AND), identical to a
+    genuinely broken NaN. This made "correctly detects undefined input"
+    indistinguishable from "silently produces garbage" in every report,
+    self-check, and CI signal this tool has ever produced -- a false
+    negative for the tool's own correctness-detection purpose. Only a
+    NaN gold makes NaN an acceptable `ok=True` outcome; a finite gold
+    with a NaN computed value is still exactly the failure this tool
+    exists to catch, so this must never widen that case.
+    """
+    return math.isnan(computed) and gold.is_nan()
 
 
 def _relative_error(computed: float, gold: Decimal) -> Optional[float]:
@@ -115,6 +134,9 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
     elif kernel == "pearson_correlation":
         computed = fn(fixture.values, fixture.q_values, dtype)
         gold = reference.gold_pearson_correlation(fixture.values, fixture.q_values)
+    elif kernel == "explained_variance":
+        computed = fn(fixture.values, fixture.q_values, dtype)
+        gold = reference.gold_explained_variance(fixture.values, fixture.q_values)
     elif kernel == "weighted_sampling_key":
         (u,) = fixture.values
         (weight,) = fixture.q_values
@@ -179,7 +201,7 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
 
     is_finite = math.isfinite(computed)
     rel_err = _relative_error(computed, gold) if is_finite else None
-    ok = is_finite and _within_tolerance(computed, float(gold), dtype)
+    ok = _both_nan_match(computed, gold) or (is_finite and _within_tolerance(computed, float(gold), dtype))
     return CaseResult(
         kernel=kernel,
         variant=variant,

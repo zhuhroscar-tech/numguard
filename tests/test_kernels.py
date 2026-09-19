@@ -897,6 +897,46 @@ class TestPearsonCorrelationCancellation:
         assert stable == pytest.approx(1.0, abs=1e-9)
 
 
+class TestExplainedVarianceSingleSample:
+    """scikit-learn/scikit-learn#34622 (confirmed open, reproduced from
+    scratch against the installed scikit-learn 1.9.1's actual
+    explained_variance_score before this kernel was written): the naive
+    force_finite-style 0/0 guard reports a false 'perfect fit' of 1.0
+    for a single wrong sample, because population variance of one value
+    is always exactly 0 by definition. LeaveOneOut cross-validation
+    scored with this metric silently reports an always-1.0 result for
+    any model, including one fit on pure noise."""
+
+    def test_naive_reports_perfect_for_wrong_single_sample(self):
+        naive = kernels.naive_explained_variance([1.0], [2.0], "float64")
+        assert naive == 1.0
+
+    def test_stable_returns_nan_for_single_sample(self):
+        stable = kernels.stable_explained_variance([1.0], [2.0], "float64")
+        assert math.isnan(stable)
+
+    def test_naive_and_stable_agree_on_multi_sample_input(self):
+        # Away from n=1, the stable kernel must be byte-for-byte
+        # identical to the naive one -- the n<2 guard is the ONLY
+        # difference between them.
+        yt = [3.0, -0.5, 2.0, 7.0]
+        yp = [2.5, 0.0, 2.0, 8.0]
+        naive = kernels.naive_explained_variance(yt, yp, "float64")
+        stable = kernels.stable_explained_variance(yt, yp, "float64")
+        assert naive == pytest.approx(stable, rel=1e-12)
+        assert stable == pytest.approx(0.95717, abs=1e-4)
+
+    def test_naive_also_reports_perfect_for_correct_single_sample(self):
+        # Control: this shows the naive guard is unconditional on
+        # sample count, not conditional on whether its verdict happens
+        # to be right for THIS particular input -- the wrong-prediction
+        # case above is the actual bug, not this one.
+        naive = kernels.naive_explained_variance([5.0], [5.0], "float64")
+        assert naive == 1.0
+        stable = kernels.stable_explained_variance([5.0], [5.0], "float64")
+        assert math.isnan(stable)
+
+
 class TestWeightedSamplingKeyUnderflow:
     """A-Res-style weighted-reservoir-sampling comparison keys
     (Efraimidis & Spirakis 2006): computing u**(1/weight) BEFORE taking

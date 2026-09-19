@@ -194,6 +194,39 @@ def gold_pearson_correlation(x_values: Sequence[float], y_values: Sequence[float
     return ctx.divide(num, den)
 
 
+def gold_explained_variance(y_true: Sequence[float], y_pred: Sequence[float]) -> Decimal:
+    """1 - Var(y_true - y_pred) / Var(y_true), from the textbook
+    definition, at 50-digit precision. For n_samples < 2, explained
+    variance is mathematically undefined (there is no variance to
+    explain with a single point) -- matches scikit-learn's own r2_score
+    convention for the identical degenerate case (NaN, not a forced
+    0/0 -> 1.0), which is the fix proposed for explained_variance_score
+    in scikit-learn/scikit-learn#34754 (PR referenced by open issue
+    #34622) but not yet applied to explained_variance_score itself."""
+    ctx = _ctx()
+    yt = _to_decimals(y_true)
+    yp = _to_decimals(y_pred)
+    n = ctx.create_decimal(len(yt))
+    if len(yt) < 2:
+        return Decimal("NaN")
+    resid = [ctx.subtract(t, p) for t, p in zip(yt, yp)]
+    resid_mean = ctx.divide(sum(resid, ctx.create_decimal(0)), n)
+    numerator = ctx.create_decimal(0)
+    for r in resid:
+        d = ctx.subtract(r, resid_mean)
+        numerator = ctx.add(numerator, ctx.multiply(d, d))
+    numerator = ctx.divide(numerator, n)
+    yt_mean = ctx.divide(sum(yt, ctx.create_decimal(0)), n)
+    denominator = ctx.create_decimal(0)
+    for t in yt:
+        d = ctx.subtract(t, yt_mean)
+        denominator = ctx.add(denominator, ctx.multiply(d, d))
+    denominator = ctx.divide(denominator, n)
+    if denominator == 0:
+        return ctx.create_decimal(1) if numerator == 0 else ctx.create_decimal(0)
+    return ctx.subtract(ctx.create_decimal(1), ctx.divide(numerator, denominator))
+
+
 def gold_layer_norm(values: Sequence[float], eps: Decimal) -> list:
     """(x - mean) / sqrt(variance + eps), from the textbook definition at
     50-digit precision -- variance here is always the mean-centered

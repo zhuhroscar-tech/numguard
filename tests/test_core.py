@@ -185,3 +185,46 @@ def test_run_rms_norm_flags_out_of_tolerance_even_if_finite():
     assert result.is_finite is True
     assert result.ok is False
     assert result.relative_error is not None and result.relative_error > 0
+
+
+def test_both_nan_match_accepts_matching_nans():
+    """Regression: a kernel correctly returning NaN for a mathematically
+    undefined input (e.g. Pearson correlation of a constant vector,
+    whose independent Decimal gold reference is also NaN) must be
+    scored ok=True, not ok=False. Before this fix, `is_finite=False`
+    unconditionally forced `ok=False` via the `is_finite and ...` AND
+    short-circuit, making "correctly detects undefined input"
+    indistinguishable from "silently produces garbage" for every
+    NaN-gold fixture this tool has ever scored."""
+    assert core._both_nan_match(float("nan"), Decimal("NaN")) is True
+
+
+def test_both_nan_match_rejects_nan_computed_with_finite_gold():
+    """A NaN computed value against a genuinely finite (well-defined)
+    gold answer is still exactly the failure this tool exists to catch
+    -- _both_nan_match must never accept that combination."""
+    assert core._both_nan_match(float("nan"), Decimal("0.5")) is False
+
+
+def test_both_nan_match_rejects_finite_computed_with_nan_gold():
+    """A finite computed value against an undefined (NaN) gold answer
+    means the kernel silently invented a numeric verdict for an
+    undefined input -- also a real failure, not an acceptance case."""
+    assert core._both_nan_match(0.5, Decimal("NaN")) is False
+
+
+def test_run_scalar_scores_nan_gold_nan_computed_as_ok():
+    """End-to-end regression via the real pearson_correlation dispatch
+    path: a constant-x fixture makes the independent Decimal gold
+    reference NaN, and the stable kernel correctly also returns NaN via
+    its explicit zero-variance guard -- this combination must be scored
+    ok=True by run_kernel's real _run_scalar path, not just by the unit
+    test of _both_nan_match in isolation."""
+    results = core.run_kernel("pearson_correlation", "float64")
+    constant_stable = [
+        r for r in results
+        if r.variant == "stable" and r.fixture == "constant_x_undefined_control"
+    ]
+    assert len(constant_stable) == 1
+    assert constant_stable[0].is_finite is False
+    assert constant_stable[0].ok is True

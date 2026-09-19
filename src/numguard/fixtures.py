@@ -1239,6 +1239,81 @@ PEARSON_CORRELATION_FIXTURES = [
         dtypes=("float32", "float64"),
         expect_naive_ok=True,
     ),
+    Fixture(
+        "constant_x_undefined_control",
+        [5.0, 5.0, 5.0, 5.0],
+        "x is exactly constant, making Pearson's r mathematically "
+        "undefined (0/0: zero variance to correlate with anything) "
+        "regardless of y -- both the naive and stable formulas "
+        "correctly produce NaN here (verified: the naive formula's "
+        "denominator (n*sxx-sx^2)*(n*syy-sy^2) has its first factor "
+        "identically 0, and the stable formula's own explicit "
+        "norm_x==0 guard returns NaN directly), matching the "
+        "independent Decimal gold reference's own NaN return for a "
+        "zero-variance input. This exercises this tool's own scoring "
+        "engine's NaN-vs-NaN acceptance path (core.py's "
+        "_both_nan_match), previously untested: before that fix, a "
+        "kernel correctly reporting 'undefined' via NaN for an "
+        "undefined-input fixture was scored ok=False identically to "
+        "a genuinely broken NaN, making 'correctly detects undefined "
+        "input' indistinguishable from 'silently produces garbage' "
+        "in every report this tool has ever produced.",
+        q_values=[1.0, 2.0, 3.0, 4.0],
+        expect_naive_ok=True,
+    ),
+]
+
+
+EXPLAINED_VARIANCE_FIXTURES = [
+    Fixture(
+        "everyday_multi_sample_control",
+        [3.0, -0.5, 2.0, 7.0],
+        "Ordinary multi-sample regression predictions, no degenerate "
+        "n=1 case -- naive and stable formulas agree exactly here "
+        "(true explained variance ~= 0.95717), confirming the n<2 "
+        "guard added to the stable kernel does not change any "
+        "ordinary-input result.",
+        q_values=[2.5, 0.0, 2.0, 8.0],
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "single_sample_wrong_prediction",
+        [1.0],
+        "scikit-learn/scikit-learn#34622 (confirmed open; reproduced "
+        "from scratch against the installed scikit-learn 1.9.1's "
+        "actual explained_variance_score before this fixture was "
+        "written): a SINGLE sample with a badly wrong prediction "
+        "(true=1.0, predicted=2.0). Population variance of one value "
+        "is always exactly 0 by definition (no spread to measure), so "
+        "both Var(y_true - y_pred) and Var(y_true) collapse to 0 "
+        "regardless of how wrong the prediction is -- the naive "
+        "force_finite-style 0/0 guard then reports a false 'perfect "
+        "fit' of 1.0. The stable kernel instead returns NaN (this "
+        "metric is undefined for n<2), matching r2_score's own "
+        "established convention for the identical degenerate case in "
+        "the same library. This is the exact failure mode that makes "
+        "LeaveOneOut cross-validation scored with this metric report "
+        "an always-perfect 1.0 for ANY model, including one fit on "
+        "pure noise.",
+        q_values=[2.0],
+    ),
+    Fixture(
+        "single_sample_correct_prediction",
+        [5.0],
+        "Control for the fixture above: a single sample with a "
+        "CORRECT prediction. The naive formula still incorrectly "
+        "reports a finite 1.0 here (its 0/0 guard is unconditional on "
+        "sample count, not conditional on whether the verdict happens "
+        "to look plausible for this particular input), while the "
+        "independent gold reference and the stable kernel both treat "
+        "n=1 as undefined (NaN) regardless of whether the prediction "
+        "was right or wrong -- demonstrating the naive guard's defect "
+        "is structural (it never even checks n), not merely a wrong "
+        "answer on the adversarial fixture above. Not a naive-ok "
+        "control: naive is wrong here too, just coincidentally "
+        "plausible-looking.",
+        q_values=[5.0],
+    ),
 ]
 
 
@@ -2405,6 +2480,7 @@ FIXTURES_BY_KERNEL = {
     "hll_register": HLL_REGISTER_FIXTURES,
     "focal_loss_grad": FOCAL_LOSS_GRAD_FIXTURES,
     "pearson_correlation": PEARSON_CORRELATION_FIXTURES,
+    "explained_variance": EXPLAINED_VARIANCE_FIXTURES,
     "weighted_sampling_key": WEIGHTED_SAMPLING_KEY_FIXTURES,
     "geometric_mean": GEOMETRIC_MEAN_FIXTURES,
     "p2_quantile": P2_QUANTILE_FIXTURES,

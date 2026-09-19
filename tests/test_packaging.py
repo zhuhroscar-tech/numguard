@@ -104,6 +104,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "hll_register": "HyperLogLog register term",
         "focal_loss_grad": "Sigmoid focal loss gradient",
         "pearson_correlation": "Pearson correlation coefficient",
+        "explained_variance": "Explained variance regression score",
         "weighted_sampling_key": "Weighted reservoir-sampling comparison key",
         "geometric_mean": "Geometric mean",
         "p2_quantile": "P^2 (Piecewise-Parabolic) streaming quantile estimator",

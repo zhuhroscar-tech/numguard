@@ -3,7 +3,8 @@
 Compares naive and textbook-stable formulations of softmax, log-sum-exp,
 cross-entropy, variance, layer_norm, rms_norm, kl_divergence,
 online_softmax, masked_softmax, sum, rope_cos, int8_add, hll_register,
-focal_loss_grad, pearson_correlation, weighted_sampling_key,
+focal_loss_grad, pearson_correlation, explained_variance,
+weighted_sampling_key,
 geometric_mean, p2_quantile, repetition_penalty, speculative_reject,
 weight_decay, gradient_accumulation_bias, longrope_factor_select,
 squared_euclidean_distance, bpe_pair_count_overflow,
@@ -27,4 +28,4 @@ z = -1/e, zeroing a later step's denominator and returning nan where the
 true value is exactly -1.
 """
 
-__version__ = "0.30.0"
+__version__ = "0.31.0"
