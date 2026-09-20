@@ -2153,3 +2153,107 @@ class TestLambertW0BranchPoint:
             actual = kernels.naive_lambertw0([z], "float64")
             assert actual == pytest.approx(expected, rel=1e-6)
 
+
+class TestSortedSearchFloat64Promotion:
+    """naive_sorted_search reproduces numpy.searchsorted's own uint64-to-
+    float64 promotion bug (numpy/numpy#29727, OPEN): binary-search
+    comparisons cast every element and the needle to float64, which is
+    only exact for integers up to 2**53 -- past that boundary, distinct
+    integers within one ULP round to the same double and the search
+    silently returns the wrong index. stable_sorted_search compares as
+    Python int (unbounded precision) and is immune at every magnitude.
+    """
+
+    def test_naive_wrong_stable_correct_at_issue_exact_repro(self):
+        # The numpy/numpy#29727 issue's own exact repro shape.
+        base = 2**62
+        arr = [base + i for i in range(1000)]
+        needle = base + 25
+        gold = reference.gold_sorted_search(arr, needle)
+        naive = kernels.naive_sorted_search(arr, needle)
+        stable = kernels.stable_sorted_search(arr, needle)
+        assert naive == 0  # matches the issue's own reported wrong output
+        assert stable == 25
+        assert stable == int(gold)
+        assert naive != int(gold)
+
+    def test_both_agree_below_2_pow_53_boundary(self):
+        # Control: entirely within float64's exact-integer range --
+        # naive and stable must agree exactly here.
+        base = 1_000_000
+        arr = [base + i for i in range(200)]
+        for offset in (0, 42, 77, 199):
+            needle = base + offset
+            gold = reference.gold_sorted_search(arr, needle)
+            naive = kernels.naive_sorted_search(arr, needle)
+            stable = kernels.stable_sorted_search(arr, needle)
+            assert naive == stable == int(gold) == offset
+
+    def test_both_agree_at_boundary_not_past_it(self):
+        # Control: array entirely <= 2**53 (the boundary itself is still
+        # exactly representable) -- naive and stable still agree.
+        base = 2**53 - 200
+        arr = [base + i for i in range(200)]
+        needle = base + 150
+        gold = reference.gold_sorted_search(arr, needle)
+        naive = kernels.naive_sorted_search(arr, needle)
+        stable = kernels.stable_sorted_search(arr, needle)
+        assert naive == stable == int(gold) == 150
+
+    def test_naive_diverges_immediately_past_2_pow_53(self):
+        # One integer past the boundary already produces a wrong naive
+        # result -- the bug is not confined to extreme magnitudes.
+        base = 2**53 + 1
+        arr = [base + i for i in range(50)]
+        needle = base + 7
+        gold = reference.gold_sorted_search(arr, needle)
+        naive = kernels.naive_sorted_search(arr, needle)
+        stable = kernels.stable_sorted_search(arr, needle)
+        assert stable == int(gold) == 7
+        assert naive != 7
+
+    def test_naive_worsens_at_larger_magnitudes(self):
+        # As magnitude grows, the float64 ULP grows too, so naive's
+        # error grows from a small offset (2**58) to returning 0 for
+        # every needle in range (uint64-max-adjacent) -- stable is
+        # exact at every one of these magnitudes.
+        cases = [
+            (2**58, 200, 77),
+            (2**64 - 300, 200, 77),
+        ]
+        for base, n, offset in cases:
+            arr = [base + i for i in range(n)]
+            needle = base + offset
+            gold = reference.gold_sorted_search(arr, needle)
+            naive = kernels.naive_sorted_search(arr, needle)
+            stable = kernels.stable_sorted_search(arr, needle)
+            assert stable == int(gold) == offset
+            assert naive != offset
+
+    def test_reference_matches_independent_bisect_oracle(self):
+        # Cross-check gold_sorted_search against Python's own stdlib
+        # bisect module -- a completely independent implementation, not
+        # just this repo's own stable kernel.
+        import bisect
+
+        base = 2**62
+        arr = [base + i for i in range(500)]
+        for offset in (0, 1, 123, 250, 499, 500):
+            needle = base + offset
+            gold = reference.gold_sorted_search(arr, needle)
+            oracle = bisect.bisect_left(arr, needle)
+            assert int(gold) == oracle
+
+    def test_naive_matches_actual_installed_numpy_promotion_bug(self):
+        # Live reproduction this repository's reproduce-before-accept
+        # rule requires, encoded as a permanent regression test: the
+        # actually-installed numpy really does return the wrong index
+        # for a bare Python int needle, and the correct index for an
+        # explicitly uint64-typed needle.
+        np = pytest.importorskip("numpy")
+        arr = np.arange(2**62, 2**62 + 1000, dtype=np.uint64)
+        wrong = int(np.searchsorted(arr, 2**62 + 25))
+        correct = int(np.searchsorted(arr, np.uint64(2**62 + 25)))
+        assert wrong == 0
+        assert correct == 25
+

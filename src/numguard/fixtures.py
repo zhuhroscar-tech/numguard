@@ -150,6 +150,16 @@ class Fixture:
     # overflows outright) well before either factor alone would.
     gl_alpha: Optional[float] = None
     gl_x: Optional[float] = None
+    # Search-needle value, used only by sorted_search fixtures --
+    # `values` holds the sorted array of integer codes to search (as a
+    # plain Python list of ints, NOT dtype-swept: this kernel audits
+    # exact-integer comparison correctness, not float precision). See
+    # numpy/numpy#29727: `np.searchsorted(uint64_array, python_int)`
+    # promotes both operands to float64 before comparing, silently
+    # returning the wrong insertion index once the array's magnitude
+    # exceeds 2**53 (float64's exact-integer limit). None for every
+    # other kernel.
+    ss_needle: Optional[int] = None
 
 
 LOGSUMEXP_SOFTMAX_FIXTURES = [
@@ -2464,6 +2474,75 @@ LAMBERTW0_FIXTURES = [
 ]
 
 
+SORTED_SEARCH_FIXTURES = [
+    Fixture(
+        "control_small_values",
+        [1_000_000 + i for i in range(200)],
+        "Control: small integers (base 1,000,000) far below float64's "
+        "2**53 exact-integer boundary -- promoting to float64 loses no "
+        "precision here, so naive and stable agree exactly.",
+        ss_needle=1_000_000 + 77,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "control_boundary_at_2_pow_53",
+        [2**53 - 200 + i for i in range(200)],
+        "Control at the very top edge of float64's exact-integer range: "
+        "every value in this array is <= 2**53, still exactly "
+        "representable, so naive and stable still agree exactly right "
+        "up to (but not past) the boundary.",
+        ss_needle=2**53 - 200 + 150,
+        dtypes=("float64",),
+        expect_naive_ok=True,
+    ),
+    Fixture(
+        "adversarial_just_above_2_pow_53",
+        [2**53 + 1 + i for i in range(50)],
+        "Just one integer past float64's 2**53 exact-integer limit: "
+        "naive's float64 promotion already rounds adjacent codes "
+        "together, returning index 6 instead of the correct 7 for this "
+        "needle -- numpy/numpy#29727's failure mode starts appearing "
+        "immediately past the boundary, not only at extreme magnitudes.",
+        ss_needle=2**53 + 1 + 7,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "adversarial_mid_2_pow_58",
+        [2**58 + i for i in range(200)],
+        "Mid-magnitude array (2**58, ~2.9e17): the float64 ULP at this "
+        "scale is 32, so every group of 32 consecutive integers rounds "
+        "to the same double -- naive returns 33 instead of the correct "
+        "77 for this needle, a large silent error, not an off-by-one.",
+        ss_needle=2**58 + 77,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "adversarial_issue_exact_repro_2_pow_62",
+        [2**62 + i for i in range(1000)],
+        "The numpy/numpy#29727 issue's own exact repro shape (base "
+        "2**62, needle offset 25): naive returns 0 (matching the "
+        "issue's own reported wrong output) instead of the correct 25 "
+        "-- the float64 ULP here (512) is larger than the entire "
+        "needle offset, so EVERY element in the first ULP-width block "
+        "compares equal to the needle under naive's lossy promotion.",
+        ss_needle=2**62 + 25,
+        dtypes=("float64",),
+    ),
+    Fixture(
+        "adversarial_near_uint64_max",
+        [2**64 - 300 + i for i in range(200)],
+        "Near uint64's maximum representable value: the float64 ULP "
+        "here (2048) dwarfs the entire 200-element array, so naive "
+        "returns 0 for every needle in range regardless of its true "
+        "position -- the most extreme form of this bug, matching "
+        "uint64 hash/ID values used at the very top of their range.",
+        ss_needle=2**64 - 300 + 77,
+        dtypes=("float64",),
+    ),
+]
+
+
 FIXTURES_BY_KERNEL = {
     "logsumexp": LOGSUMEXP_SOFTMAX_FIXTURES,
     "softmax": LOGSUMEXP_SOFTMAX_FIXTURES,
@@ -2499,6 +2578,7 @@ FIXTURES_BY_KERNEL = {
     "mannwhitney_u": MANNWHITNEY_U_FIXTURES,
     "i0": I0_FIXTURES,
     "lambertw0": LAMBERTW0_FIXTURES,
+    "sorted_search": SORTED_SEARCH_FIXTURES,
 }
 
 

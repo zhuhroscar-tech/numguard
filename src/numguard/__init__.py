@@ -25,7 +25,12 @@ sqrt(|x|), overflowing for large-but-representable |x|. lambertw0 audits
 scipy.special.lambertw's branch-point bug (scipy/scipy#24770, open): the
 Halley iteration's initial guess lands exactly on the branch point at
 z = -1/e, zeroing a later step's denominator and returning nan where the
-true value is exactly -1.
+true value is exactly -1. sorted_search audits numpy.searchsorted's
+uint64-to-float64 promotion bug (numpy/numpy#29727, open): searching a
+sorted array of large integers with a plain Python int needle silently
+promotes both operands to float64, returning a wrong insertion index
+once magnitudes exceed float64's 2**53 exact-integer limit, with no
+error, warning, or NaN.
 """
 
-__version__ = "0.31.0"
+__version__ = "0.32.0"

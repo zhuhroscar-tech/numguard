@@ -36,7 +36,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "squared_euclidean_distance, bpe_pair_count_overflow, "
             "beam_search_length_penalty, int32_dequant_overflow, norm, "
             "incremental_mean, genlaguerre, mannwhitney_u, i0, "
-            "lambertw0) against "
+            "lambertw0, sorted_search) against "
             "an independent "
             "high-precision reference, across "
             "float16/float32/float64, on adversarial fixtures."

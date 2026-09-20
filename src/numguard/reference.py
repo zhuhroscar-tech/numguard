@@ -1000,3 +1000,34 @@ def gold_lambertw0(z_raw: float) -> Decimal:
     return ctx.divide(ctx.add(lo, hi), ctx.create_decimal(2))
 
 
+def gold_sorted_search(sorted_codes: Sequence[int], needle: int) -> Decimal:
+    """Ground truth for `bisect_left`-style search over exact (unbounded-
+    precision) Python integers -- independent of both kernels under test
+    (neither uses Python's `int` comparison path exclusively: naive casts
+    to `float` first). Returns the leftmost insertion index `i` such that
+    `sorted_codes[j] < needle` for all `j < i` and `sorted_codes[j] >=
+    needle` for all `j >= i`, computed with exact integer comparisons
+    that can never lose precision regardless of magnitude -- unlike
+    float64, which is only exact for integers up to 2**53. Returned as a
+    `Decimal` for consistency with every other gold_* function in this
+    module (core.py's scoring machinery calls `float(gold)` and
+    `gold.is_nan()` uniformly across all kernels).
+
+    This is the ground truth for numpy/numpy#29727 (OPEN, unfixed as of
+    this kernel's acceptance): `np.searchsorted(uint64_array,
+    python_int_needle)` promotes both operands to float64 before
+    comparing, silently returning the wrong index once values exceed
+    2**53.
+    """
+    lo, hi = 0, len(sorted_codes)
+    needle_i = int(needle)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if int(sorted_codes[mid]) < needle_i:
+            lo = mid + 1
+        else:
+            hi = mid
+    ctx = _ctx()
+    return ctx.create_decimal(lo)
+
+

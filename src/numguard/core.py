@@ -13,7 +13,7 @@ from typing import List, Optional
 from . import kernels, reference
 from .fixtures import FIXTURES_BY_KERNEL, Fixture
 
-ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "explained_variance", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select", "squared_euclidean_distance", "bpe_pair_count_overflow", "beam_search_length_penalty", "int32_dequant_overflow", "norm", "incremental_mean", "genlaguerre", "mannwhitney_u", "i0", "lambertw0")
+ALL_KERNELS = ("logsumexp", "softmax", "cross_entropy", "variance", "layer_norm", "rms_norm", "kl_divergence", "online_softmax", "masked_softmax", "sum", "rope_cos", "int8_add", "hll_register", "focal_loss_grad", "pearson_correlation", "explained_variance", "weighted_sampling_key", "geometric_mean", "p2_quantile", "repetition_penalty", "speculative_reject", "weight_decay", "gradient_accumulation_bias", "longrope_factor_select", "squared_euclidean_distance", "bpe_pair_count_overflow", "beam_search_length_penalty", "int32_dequant_overflow", "norm", "incremental_mean", "genlaguerre", "mannwhitney_u", "i0", "lambertw0", "sorted_search")
 ALL_DTYPES = ("float16", "float32", "float64")
 
 
@@ -196,6 +196,9 @@ def _run_scalar(kernel: str, variant: str, fixture: Fixture, dtype: str) -> Case
         computed = fn(fixture.values, dtype)
         (z_raw,) = fixture.values
         gold = reference.gold_lambertw0(z_raw)
+    elif kernel == "sorted_search":
+        computed = fn(fixture.values, fixture.ss_needle)
+        gold = reference.gold_sorted_search(fixture.values, fixture.ss_needle)
     else:
         raise ValueError(f"not a scalar kernel: {kernel}")
 

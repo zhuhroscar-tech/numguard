@@ -2104,6 +2104,68 @@ def stable_lambertw0(values, dtype: str) -> float:
         return float(w)
 
 
+# --- sorted-array integer search (numpy/numpy#29727) ------------------
+#
+# Real, currently-open bug, independently re-reproduced on this host's
+# installed numpy (2.5.2) before writing this kernel's acceptance card,
+# per this repo's own reproduce-before-accept discipline:
+# `np.searchsorted(sorted_uint64_array, python_int_needle)` silently
+# promotes BOTH operands to float64 before comparing, per numpy's own
+# `PyArray_DescrFromObject` promotion rule (confirmed live in the issue
+# thread by a numpy maintainer: "float64 is considered a reasonable
+# promotion for int64 and uint64 in all cases"). Once the true integer
+# value exceeds float64's 53-bit exact-integer range (|value| > 2**53),
+# distinct integers within one ULP of each other round to the SAME
+# float64 double, so the binary search compares rounded (lossy)
+# representations instead of the true integer order and can return a
+# WRONG index with no error, warning, or NaN. The issue's own repro:
+# `np.searchsorted(np.arange(2**62, 2**62+1000, dtype=np.uint64),
+# 2**62+25)` returns `0` instead of the correct `25` -- and passing the
+# EXACT SAME needle as `np.uint64(2**62+25)` instead of a bare Python
+# int returns the correct `25`, isolating the bug to the promotion path
+# specifically (confirmed by this repo's own from-scratch reproduction:
+# see docs/numerical-stability.md). This is categorically distinct from
+# every other kernel in this catalog: the defect is in COMPARISON
+# (search/ordering) after a lossy dtype promotion, not in accumulation,
+# reduction, cancellation, or fixed-width arithmetic overflow.
+def naive_sorted_search(sorted_codes, needle) -> int:
+    """Binary search that compares elements as Python `float` -- exactly
+    numpy's own promote-to-float64 behavior for a uint64 array searched
+    with a plain Python int needle (`PyArray_DescrFromObject` picks
+    float64 as the common type). Elements and the needle are cast to
+    `float` before every comparison, so distinct integers whose true
+    values differ by less than one float64 ULP at that magnitude compare
+    equal (or in the wrong order), silently corrupting the binary
+    search's invariant."""
+    lo, hi = 0, len(sorted_codes)
+    needle_f = float(needle)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if float(sorted_codes[mid]) < needle_f:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def stable_sorted_search(sorted_codes, needle) -> int:
+    """Binary search that compares elements as Python `int` (arbitrary
+    precision, exact) -- matching `np.searchsorted` called with an
+    explicitly-typed needle (e.g. `np.uint64(needle)`), which keeps both
+    operands in an exact integer dtype and avoids the float64 promotion
+    entirely. No magnitude-dependent precision loss is possible since
+    Python ints never round."""
+    lo, hi = 0, len(sorted_codes)
+    needle_i = int(needle)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if int(sorted_codes[mid]) < needle_i:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
 KERNELS = {
     "logsumexp": (naive_logsumexp, stable_logsumexp),
     "softmax": (naive_softmax, stable_softmax),
@@ -2139,4 +2201,5 @@ KERNELS = {
     "mannwhitney_u": (naive_mannwhitney_u, stable_mannwhitney_u),
     "i0": (naive_i0, stable_i0),
     "lambertw0": (naive_lambertw0, stable_lambertw0),
+    "sorted_search": (naive_sorted_search, stable_sorted_search),
 }

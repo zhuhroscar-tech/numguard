@@ -123,6 +123,7 @@ def test_numerical_stability_doc_exists_and_covers_every_kernel():
         "mannwhitney_u": "Mann-Whitney U statistic",
         "i0": "Modified Bessel function of the first kind, order 0",
         "lambertw0": "Lambert W function, principal branch (W_0)",
+        "sorted_search": "sorted-array integer search",
         }
     for kernel in core.ALL_KERNELS:
         assert kernel in section_aliases, (

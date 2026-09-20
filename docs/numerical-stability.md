@@ -1677,6 +1677,64 @@ exact branch point, not a wider unstable region, and that this targets
 the specific 0/0-at-`p=0` mechanism scipy/scipy#24770 documents, not a
 decorative claim.
 
+## sorted-array integer search
+
+**Textbook/reference definition:** for a sorted array `a` and a value
+`v`, `bisect_left(a, v)` returns the leftmost index `i` such that
+`a[j] < v` for all `j < i` and `a[j] >= v` for all `j >= i`. This
+requires only a correct, exact total ordering on the array's elements
+and the needle -- no floating-point arithmetic is inherent to the
+problem itself, since the values being compared are exact integers.
+
+**Naive formula** (`naive_sorted_search`): a standard binary search that
+casts every array element and the needle to Python `float` before
+comparing -- exactly `numpy.searchsorted`'s own behavior when a
+`uint64`/`int64` array is searched with a plain Python `int` needle.
+This is a real, currently open bug: numpy/numpy#29727 ("searchsorted can
+return wrong result due to promoting uint64 to float64") -- independently
+reproduced from scratch against this host's actually-installed
+`numpy==2.5.2` before this kernel was accepted:
+`np.searchsorted(np.arange(2**62, 2**62+1000, dtype=np.uint64),
+2**62+25)` returns `0` instead of the correct `25`, while passing the
+identical needle as `np.uint64(2**62+25)` instead of a bare Python `int`
+returns the correct `25` -- isolating the defect to the promotion path.
+A numpy maintainer confirmed the root cause live in the issue thread:
+`PyArray_DescrFromObject` promotes both operands to `float64` ("float64
+is considered a reasonable promotion for int64 and uint64 in all
+cases"), which is lossless only for integers within float64's 53-bit
+exact range (`|value| <= 2**53`). Past that boundary, distinct integers
+within one float64 ULP of each other round to the identical double,
+so the naive binary search's comparisons see them as equal (or in the
+wrong order) and its `lo`/`hi` bounds converge on the wrong index --
+silently, with no error, warning, or NaN. As of this kernel's
+acceptance the issue is still `state=open` (a "safe promotion" fix was
+discussed and agreed on at a numpy community meeting, but no PR has
+landed) -- verified live via the GitHub API immediately before
+acceptance, per this repository's reproduce-before-accept discipline.
+
+**Stable formula** (`stable_sorted_search`): the same binary search
+structure, but every comparison casts to Python `int` (arbitrary
+precision) instead of `float` -- matching `np.searchsorted` called with
+an explicitly-typed needle (e.g. `np.uint64(needle)`), which keeps both
+operands in an exact integer dtype and never invokes the lossy
+float64-promotion path. Since Python's `int` has no fixed width, no
+comparison can ever lose precision regardless of the array's magnitude.
+
+`sorted_search`'s reference (`gold_sorted_search`) performs the
+identical exact-integer binary search independently in this repository's
+own code, returned as a `Decimal` for interface consistency with every
+other kernel's gold function -- deliberately not calling
+`stable_sorted_search` itself, so a bug shared between the naive and
+stable formulations could not hide behind comparing them only to each
+other. `numguard --check-naive-fails` (run in CI on every push) asserts
+that every adversarial fixture above (just past the `2**53` boundary,
+mid-magnitude `2**58`, the issue's own exact `2**62` repro, and the
+uint64-range extreme) actually fails at the naive path and passes at the
+stable path, and that the two controls (small values, and an array
+sitting entirely at or below the `2**53` boundary) agree exactly between
+naive and stable -- proving the failure is confined to genuinely
+above-boundary magnitudes, not a decorative claim.
+
 ## References
 
 - Blanchard, P., Higham, D.J., Higham, N.J. (2019), "Accurately computing
