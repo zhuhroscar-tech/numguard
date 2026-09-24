@@ -1,13 +1,14 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "numguard"
-version = "0.32.0"
+version = "0.32.1"
 description = "Audit naive vs numerically-stable ML math kernels (softmax, log-sum-exp, cross-entropy, variance, layer_norm, rms_norm, kl_divergence, online_softmax, masked_softmax, sum, rope_cos, int8_add, hll_register, focal_loss_grad, pearson_correlation, explained_variance, weighted_sampling_key, geometric_mean, p2_quantile, repetition_penalty, speculative_reject, weight_decay, gradient_accumulation_bias, longrope_factor_select, squared_euclidean_distance, bpe_pair_count_overflow, beam_search_length_penalty, int32_dequant_overflow, norm, incremental_mean, genlaguerre, mannwhitney_u, i0, lambertw0, sorted_search) against a high-precision reference"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "zhuhroscar-tech" }]
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.24"]
@@ -15,7 +16,6 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",

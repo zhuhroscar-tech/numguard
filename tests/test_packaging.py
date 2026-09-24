@@ -65,6 +65,21 @@ def test_init_version_matches_pyproject_version():
     )
 
 
+def test_pyproject_uses_current_license_metadata():
+    text = (_REPO_ROOT / "pyproject.toml").read_text()
+
+    assert 'license = "MIT"' in text
+    assert 'license-files = ["LICENSE"]' in text
+    assert "license = {" not in text, (
+        "setuptools now warns about table-style project.license metadata; "
+        "use a SPDX license string instead"
+    )
+    assert "License :: OSI Approved :: MIT License" not in text, (
+        "setuptools warns that license classifiers are deprecated when "
+        "SPDX license metadata is present"
+    )
+
+
 def test_numerical_stability_doc_exists_and_covers_every_kernel():
     """kernels.py's own module docstring tells readers: 'see
     docs/numerical-stability.md for the derivation of each' -- that file
