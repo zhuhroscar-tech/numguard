@@ -23,7 +23,7 @@ source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
-也可从[发布页面](https://github.com/zhuhroscar-tech/numguard/releases)选择实际存在的 wheel，并核对对应版本的校验和。NumPy 依赖原生扩展，因此本项目不提供独立 zipapp。
+也可从[发布页面](https://github.com/zhuhroscar-tech/numguard/releases)选择实际存在的 wheel，并核对对应版本的校验和。仓库发布历史见 [CHANGELOG.md](CHANGELOG.md)。NumPy 依赖原生扩展，因此本项目不提供独立 zipapp。
 
 ## 快速使用
 

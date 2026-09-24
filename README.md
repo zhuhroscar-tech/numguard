@@ -26,7 +26,7 @@ source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
-Release wheels are also available on the [releases page](https://github.com/zhuhroscar-tech/numguard/releases); choose an actual asset and check its release checksum. There is no standalone zipapp because NumPy needs native extensions.
+Release wheels are also available on the [releases page](https://github.com/zhuhroscar-tech/numguard/releases); choose an actual asset and check its release checksum. See [CHANGELOG.md](CHANGELOG.md) for repository release history. There is no standalone zipapp because NumPy needs native extensions.
 
 ## Quick start
 

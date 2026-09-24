@@ -80,6 +80,30 @@ def test_pyproject_uses_current_license_metadata():
     )
 
 
+def test_changelog_exists_and_documents_current_version():
+    changelog = _REPO_ROOT / "CHANGELOG.md"
+    assert changelog.is_file(), "release history should live in CHANGELOG.md, not only GitHub releases"
+    text = changelog.read_text()
+    version = _pyproject_field("version")
+    assert f"## v{version}" in text, "CHANGELOG.md must document the current package version"
+    assert "https://github.com/zhuhroscar-tech/numguard/releases" in text
+
+
+def test_readmes_link_release_history_and_license():
+    for name in ("README.md", "README.zh-CN.md"):
+        text = (_REPO_ROOT / name).read_text()
+        assert "CHANGELOG.md" in text, f"{name} should link repository release history"
+        assert "LICENSE" in text, f"{name} should link the MIT license"
+
+
+def test_ci_builds_release_artifacts():
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "ci.yml")
+    assert workflow.is_file(), "GitHub Actions CI workflow is required"
+    text = workflow.read_text()
+    for expected in ("python -m pytest", "python -m build", "sha256sum", "actions/upload-artifact"):
+        assert expected in text, f"CI workflow should include {expected!r}"
+
+
 def test_numerical_stability_doc_exists_and_covers_every_kernel():
     """kernels.py's own module docstring tells readers: 'see
     docs/numerical-stability.md for the derivation of each' -- that file

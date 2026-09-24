@@ -33,4 +33,4 @@ once magnitudes exceed float64's 2**53 exact-integer limit, with no
 error, warning, or NaN.
 """
 
-__version__ = "0.32.1"
+__version__ = "0.32.2"
