@@ -2,6 +2,12 @@
 
 All notable source-quality changes are recorded here. Release artifacts live on the [GitHub releases page](https://github.com/zhuhroscar-tech/numguard/releases); this project intentionally ships wheels/sdists rather than a zipapp because NumPy depends on native extensions.
 
+## v0.32.3 - Maintenance metadata and tag CI
+
+- Added package metadata links for issues and this changelog.
+- Made GitHub Actions CI run explicitly on `v*` release tags.
+- Added repository-contract coverage so release maintenance metadata and tag CI wiring do not drift.
+
 ## v0.32.2 - Changelog and release-history contract
 
 - Added this changelog so release history is visible in the repository, not only in GitHub's releases UI.

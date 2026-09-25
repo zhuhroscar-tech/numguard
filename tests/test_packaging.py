@@ -102,6 +102,18 @@ def test_ci_builds_release_artifacts():
     text = workflow.read_text()
     for expected in ("python -m pytest", "python -m build", "sha256sum", "actions/upload-artifact"):
         assert expected in text, f"CI workflow should include {expected!r}"
+    assert 'tags: ["v*"]' in text, "CI should run on release tags as well as main pushes"
+
+
+def test_pyproject_links_maintenance_resources():
+    text = (_REPO_ROOT / "pyproject.toml").read_text()
+
+    assert 'Homepage = "https://github.com/zhuhroscar-tech/numguard"' in text
+    assert 'Issues = "https://github.com/zhuhroscar-tech/numguard/issues"' in text
+    assert (
+        'Changelog = "https://github.com/zhuhroscar-tech/numguard/blob/main/CHANGELOG.md"'
+        in text
+    )
 
 
 def test_numerical_stability_doc_exists_and_covers_every_kernel():
